@@ -191,8 +191,8 @@ ingress-nginx:
     hostPort:
       enabled: true
       ports:
-        http: 80
-        https: 443
+        http: 30080
+        https: 30443
     kind: Deployment
     resources:
       requests: { cpu: 50m, memory: 90Mi }
