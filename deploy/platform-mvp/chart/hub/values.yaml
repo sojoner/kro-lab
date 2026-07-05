@@ -105,10 +105,16 @@ loki:
     auth_enabled: false
     commonConfig:
       replication_factor: 1
+    podSecurityContext:
+      fsGroup: 0
+      runAsUser: 0
+      runAsNonRoot: false
+      runAsGroup: 0
     containerSecurityContext:
       readOnlyRootFilesystem: false
-  podSecurityContext:
-    fsGroup: 0
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
   singleBinary:
     replicas: 1
     persistence:
@@ -185,8 +191,8 @@ ingress-nginx:
     hostPort:
       enabled: true
       ports:
-        http: 30080
-        https: 30443
+        http: 80
+        https: 443
     kind: Deployment
     resources:
       requests: { cpu: 50m, memory: 90Mi }
