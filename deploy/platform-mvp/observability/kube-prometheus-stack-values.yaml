@@ -1,0 +1,74 @@
+# kube-prometheus-stack values for kind MVP
+# Lightweight config: single replica, small limits, no alertmanager
+# Apply with: helm upgrade --install kps prometheus-community/kube-prometheus-stack -f this.yaml
+
+crds:
+  enabled: true # install ServiceMonitor/PodMonitor CRDs
+
+alertmanager:
+  enabled: false # skip for MVP
+
+prometheus:
+  prometheusSpec:
+    replicas: 1
+    retention: 2d
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 500m, memory: 1Gi }
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    podMonitorSelector: {}
+    ruleSelector: {}
+    additionalScrapeConfigs:
+      - job_name: rook-ceph-mgr
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces: { names: [rook-ceph] }
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: rook-ceph-mgr
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+
+grafana:
+  adminPassword: admin
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { cpu: 200m, memory: 256Mi }
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          url: http://kps-kube-prometheus-stack-prometheus.monitoring:9090
+          access: proxy
+          isDefault: true
+        - name: Loki
+          type: loki
+          url: http://loki.monitoring:3100
+          access: proxy
+
+kube-state-metrics:
+  resources:
+    requests: { cpu: 10m, memory: 64Mi }
+    limits:   { cpu: 50m, memory: 128Mi }
+
+nodeExporter:
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits:   { cpu: 50m, memory: 64Mi }
+
+prometheusOperator:
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 100m, memory: 128Mi }

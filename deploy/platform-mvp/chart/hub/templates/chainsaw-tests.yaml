@@ -1,0 +1,145 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chainsaw-tests
+  namespace: monitoring
+data:
+  .chainsaw.yaml: |
+    apiVersion: chainsaw.kyverno.io/v1alpha1
+    kind: Configuration
+    metadata:
+      name: platform-mvp
+    spec:
+      timeouts:
+        apply: 30s
+        assert: 60s
+        cleanup: 30s
+        delete: 30s
+        error: 10s
+        exec: 5m
+      failFast: true
+      parallel: 1
+      skipDelete: false
+      reportFormat: JSON
+      reportName: chainsaw-report
+      fullName: true
+      clusters:
+        hub:
+          kubeconfig: /tmp/chainsaw/kubeconfig-hub
+        us:
+          kubeconfig: /tmp/chainsaw/kubeconfig-us-internal
+  01-hub-cluster-ready.yaml: |
+    apiVersion: chainsaw.kyverno.io/v1alpha1
+    kind: Test
+    metadata:
+      name: hub-cluster-ready
+    spec:
+      description: "Phase 1 — Verify hub cluster is operational"
+      steps:
+      - try:
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Node
+            count: 1
+        cluster: hub
+  02-us-cluster-ready.yaml: |
+    apiVersion: chainsaw.kyverno.io/v1alpha1
+    kind: Test
+    metadata:
+      name: us-cluster-ready
+    spec:
+      description: "Phase 1 — Verify us spoke cluster is operational"
+      steps:
+      - try:
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Node
+            count: 2
+        cluster: us
+  03-rook-ceph-healthy.yaml: |
+    apiVersion: chainsaw.kyverno.io/v1alpha1
+    kind: Test
+    metadata:
+      name: rook-ceph-healthy
+    spec:
+      description: "Phase 2 — Verify Rook/Ceph is healthy on us"
+      steps:
+      - try:
+        - assert:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                namespace: rook-ceph
+                name: rook-ceph-operator
+            timeout: 2m
+        cluster: us
+      - try:
+        - script:
+            timeout: 3m
+            content: |
+              kubectl --kubeconfig /tmp/chainsaw/kubeconfig-us-internal -n rook-ceph exec deploy/rook-ceph-tools -- ceph status | grep -E 'HEALTH_(OK|WARN)'
+        cluster: us
+  04-fleet-registration.yaml: |
+    apiVersion: chainsaw.kyverno.io/v1alpha1
+    kind: Test
+    metadata:
+      name: fleet-registered
+    spec:
+      description: "Phase 3 — Verify fleet registration"
+      steps:
+      - try:
+        - assert:
+            resource:
+              apiVersion: multicluster.x-k8s.io/v1alpha1
+              kind: ClusterProfile
+              metadata:
+                name: us
+        cluster: hub
+  05-kro-globalbucket.yaml: |
+    apiVersion: chainsaw.kyverno.io/v1alpha1
+    kind: Test
+    metadata:
+      name: kro-globalbucket-rgd
+    spec:
+      description: "Phase 4 — Verify Kro RGD creates RegionalBucketRequest"
+      steps:
+      - try:
+        - assert:
+            resource:
+              apiVersion: platform.example.com/v1alpha1
+              kind: RegionalBucketRequest
+              metadata:
+                name: e2e-test-bucket-us
+            timeout: 30s
+        cluster: hub
+  06-binding-controller.yaml: |
+    apiVersion: chainsaw.kyverno.io/v1alpha1
+    kind: Test
+    metadata:
+      name: binding-controller-creates-spoke-resources
+    spec:
+      description: "Phase 5 — Verify binding controller creates Rook resources on us"
+      steps:
+      - try:
+        - assert:
+            resource:
+              apiVersion: ceph.rook.io/v1
+              kind: CephObjectStoreUser
+              metadata:
+                namespace: rook-ceph
+                name: e2e-test-bucket-us
+            timeout: 30s
+        cluster: us
+      - try:
+        - assert:
+            resource:
+              apiVersion: objectbucket.io/v1alpha1
+              kind: ObjectBucketClaim
+              metadata:
+                namespace: rook-ceph
+                name: e2e-test-bucket-us
+            timeout: 30s
+        cluster: us

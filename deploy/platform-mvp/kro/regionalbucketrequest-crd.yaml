@@ -1,0 +1,65 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: regionalbucketrequests.platform.example.com
+spec:
+  group: platform.example.com
+  names:
+    kind: RegionalBucketRequest
+    listKind: RegionalBucketRequestList
+    plural: regionalbucketrequests
+    singular: regionalbucketrequest
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Region
+          type: string
+          jsonPath: .spec.region
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [region]
+              properties:
+                region:
+                  type: string
+                  enum: [us, eu, asia]
+                sizeGiB:
+                  type: integer
+                  default: 10
+                versioned:
+                  type: boolean
+                  default: false
+            status:
+              type: object
+              properties:
+                regions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      region:
+                        type: string
+                      phase:
+                        type: string
+                      endpoint:
+                        type: string
+                      bucketName:
+                        type: string
+                      secretRef:
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                          namespace:
+                            type: string

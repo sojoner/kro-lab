@@ -1,0 +1,32 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: kro-globalbucket-rgd
+spec:
+  description: "Phase 4 — Verify Kro GlobalBucket RGD creates RegionalBucketRequest"
+  steps:
+  - try:
+    - apply:
+        file: ../../deploy/platform-mvp/kro/globalbucket-rgd.yaml
+    cluster: hub
+  - try:
+    - apply:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: GlobalBucket
+          metadata:
+            name: e2e-test-bucket
+          spec:
+            regions: [us]
+            sizeGiB: 1
+            versioned: false
+    cluster: hub
+  - try:
+    - assert:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: e2e-test-bucket-us
+        timeout: 30s
+    cluster: hub

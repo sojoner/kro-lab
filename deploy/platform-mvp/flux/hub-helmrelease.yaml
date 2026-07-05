@@ -1,0 +1,21 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: hub
+  namespace: monitoring
+spec:
+  interval: 1m
+  timeout: 15m
+  chart:
+    spec:
+      chart: ./deploy/platform-mvp/chart/hub
+      sourceRef:
+        kind: GitRepository
+        name: platform
+        namespace: flux-system
+      interval: 1m
+  values:
+    ingress:
+      host: ${ingress_host}
+    promtail:
+      enabled: false

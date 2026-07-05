@@ -1,0 +1,193 @@
+ingress:
+  host: bm4080.taildf7067.ts.net
+
+bindingController:
+  replicas: 1
+  metricsPort: 8080
+  image:
+    repository: binding-controller
+    tag: local
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+
+cronjob:
+  schedule: "*/2 * * * *"
+
+kube-prometheus-stack:
+  enabled: true
+  crds:
+    enabled: true
+  alertmanager:
+    enabled: false
+  prometheus:
+    prometheusSpec:
+      replicas: 1
+      retention: 2d
+      resources:
+        requests: { cpu: 200m, memory: 512Mi }
+        limits: { cpu: 500m, memory: 1Gi }
+      serviceMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelectorNilUsesHelmValues: false
+      ruleSelectorNilUsesHelmValues: false
+      serviceMonitorSelector: {}
+      podMonitorSelector: {}
+      ruleSelector: {}
+      additionalScrapeConfigs:
+        - job_name: rook-ceph-mgr
+          kubernetes_sd_configs:
+            - role: pod
+              namespaces: { names: [rook-ceph] }
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_label_app]
+              action: keep
+              regex: rook-ceph-mgr
+            - action: labelmap
+              regex: __meta_kubernetes_pod_label_(.+)
+  grafana:
+    adminPassword: admin
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 200m, memory: 256Mi }
+    sidecar:
+      dashboards:
+        enabled: true
+        label: grafana_dashboard
+        labelValue: "1"
+        searchNamespace: ALL
+    datasources:
+      datasources.yaml:
+        apiVersion: 1
+        datasources:
+          - name: Loki
+            type: loki
+            url: http://loki.monitoring:3100
+            access: proxy
+  kube-state-metrics:
+    resources:
+      requests: { cpu: 10m, memory: 64Mi }
+      limits: { cpu: 50m, memory: 128Mi }
+  nodeExporter:
+    resources:
+      requests: { cpu: 10m, memory: 32Mi }
+      limits: { cpu: 50m, memory: 64Mi }
+  prometheusOperator:
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { cpu: 100m, memory: 128Mi }
+
+loki:
+  enabled: true
+  fullnameOverride: loki
+  deploymentMode: SingleBinary
+  loki:
+    schemaConfig:
+      configs:
+        - from: "2025-01-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    storage:
+      type: filesystem
+      filesystem:
+        chunks_directory: /var/loki/chunks
+        rules_directory: /var/loki/rules
+    storage_config:
+      tsdb_shipper:
+        active_index_directory: /var/loki/tsdb-index
+        cache_location: /var/loki/tsdb-cache
+    limits_config:
+      max_entries_limit_per_query: 5000
+    auth_enabled: false
+    commonConfig:
+      replication_factor: 1
+    containerSecurityContext:
+      readOnlyRootFilesystem: false
+  podSecurityContext:
+    fsGroup: 0
+  singleBinary:
+    replicas: 1
+    persistence:
+      enabled: false
+    extraVolumes:
+      - name: loki-tmp
+        emptyDir: {}
+    extraVolumeMounts:
+      - name: loki-tmp
+        mountPath: /var/loki-tmp
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 200m, memory: 384Mi }
+  backend:
+    replicas: 0
+  read:
+    replicas: 0
+  write:
+    replicas: 0
+  minio:
+    enabled: false
+  gateway:
+    enabled: false
+  monitoring:
+    dashboards:
+      enabled: false
+    rules:
+      enabled: false
+    serviceMonitor:
+      enabled: false
+    selfMonitoring:
+      enabled: false
+  test:
+    enabled: false
+
+promtail:
+  enabled: true
+  containerSecurityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { cpu: 200m, memory: 256Mi }
+  config:
+    clients:
+      - url: http://loki.monitoring:3100/loki/api/v1/push
+        batchwait: 1s
+        batchsize: 1048576
+    snippets:
+      extraRelabelConfigs:
+        - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name, __meta_kubernetes_pod_label_app, __meta_kubernetes_pod_controller_name, __meta_kubernetes_pod_name]
+          regex: '^;*([^;]+)(;.*)?$'
+          target_label: app
+    limits_config:
+      max_streams_per_user: 0
+      readline_rate_drop: false
+    positions:
+      filename: /run/promtail/positions.yaml
+  tolerations:
+    - operator: Exists
+
+ingress-nginx:
+  enabled: true
+  controller:
+    replicaCount: 1
+    ingressClassResource:
+      name: nginx
+      default: false
+    service:
+      type: ClusterIP
+    hostPort:
+      enabled: true
+      ports:
+        http: 30080
+        https: 30443
+    kind: Deployment
+    resources:
+      requests: { cpu: 50m, memory: 90Mi }
+      limits: { cpu: 200m, memory: 256Mi }

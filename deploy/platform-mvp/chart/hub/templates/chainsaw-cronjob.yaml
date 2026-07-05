@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: chainsaw-runner
+  namespace: monitoring
+  labels:
+    app: chainsaw-runner
+spec:
+  schedule: {{ .Values.cronjob.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: runner
+              image: chainsaw-runner:local
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: CHAINSAW_DIR
+                  value: /tests
+                - name: LOKI_URL
+                  value: http://loki.monitoring:3100
+                - name: KUBECONFIG_HUB
+                  value: /kubeconfig/hub
+                - name: KUBECONFIG_US
+                  value: /kubeconfig/us
+              volumeMounts:
+                - name: tests
+                  mountPath: /tests
+                - name: kubeconfigs
+                  mountPath: /kubeconfig
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits:   { cpu: 200m, memory: 256Mi }
+          volumes:
+            - name: tests
+              configMap:
+                name: chainsaw-tests
+            - name: kubeconfigs
+              secret:
+                secretName: kubeconfigs

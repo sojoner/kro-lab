@@ -1,0 +1,13 @@
+apiVersion: v2
+name: us
+description: Platform MVP us spoke — Rook Ceph operator + cluster + RGW
+version: 0.1.0
+dependencies:
+  - name: rook-ceph
+    version: "v1.17.4"
+    repository: https://charts.rook.io/release
+    condition: rook-ceph.enabled
+  - name: rook-ceph-cluster
+    version: "v1.17.4"
+    repository: https://charts.rook.io/release
+    condition: rook-ceph-cluster.enabled

@@ -1,0 +1,24 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kro:platform.example.com
+  labels:
+    rbac.kro.run/aggregate-to-controller: "true"
+rules:
+  - apiGroups:
+      - platform.example.com
+    resources:
+      - globalbuckets
+      - globalbuckets/status
+      - globalbuckets/finalizers
+      - regionalbucketrequests
+      - regionalbucketrequests/status
+      - regionalbucketrequests/finalizers
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch

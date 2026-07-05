@@ -1,0 +1,9 @@
+FROM golang:1.23-alpine AS builder
+RUN GOBIN=/usr/local/bin go install github.com/kyverno/chainsaw@latest
+
+FROM alpine:3.21
+RUN apk add --no-cache curl jq bash coreutils
+COPY --from=builder /usr/local/bin/chainsaw /usr/local/bin/chainsaw
+COPY runner.sh /runner.sh
+RUN chmod +x /runner.sh
+ENTRYPOINT ["/runner.sh"]

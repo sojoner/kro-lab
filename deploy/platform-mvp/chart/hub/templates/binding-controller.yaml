@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: binding-controller
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: binding-controller
+rules:
+  - apiGroups: ["platform.example.com"]
+    resources: ["regionalbucketrequests", "regionalbucketrequests/status"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["multicluster.x-k8s.io"]
+    resources: ["clusterprofiles"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: binding-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: binding-controller
+subjects:
+  - kind: ServiceAccount
+    name: binding-controller
+    namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: binding-controller
+  namespace: default
+  labels:
+    app: binding-controller
+spec:
+  replicas: {{ .Values.bindingController.replicas }}
+  selector:
+    matchLabels:
+      app: binding-controller
+  template:
+    metadata:
+      labels:
+        app: binding-controller
+    spec:
+      serviceAccountName: binding-controller
+      containers:
+        - name: binding-controller
+          image: "{{ .Values.bindingController.image.repository }}:{{ .Values.bindingController.image.tag }}"
+          imagePullPolicy: {{ .Values.bindingController.image.pullPolicy }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.bindingController.metricsPort }}
+          resources:
+            {{- toYaml .Values.bindingController.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: binding-controller
+  namespace: default
+  labels:
+    app: binding-controller
+spec:
+  selector:
+    app: binding-controller
+  ports:
+    - name: metrics
+      port: {{ .Values.bindingController.metricsPort }}
+      targetPort: metrics

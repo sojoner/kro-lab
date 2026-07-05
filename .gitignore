@@ -1,0 +1,23 @@
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+kubeconfig-*
+.env
+.env.local
+*.kubeconfig
+
+# Helm chart dependencies (downloaded tarballs)
+deploy/platform-mvp/chart/*/charts/*.tgz
+deploy/platform-mvp/chart/*/Chart.lock

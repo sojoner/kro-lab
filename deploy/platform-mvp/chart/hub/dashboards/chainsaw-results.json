@@ -1,0 +1,71 @@
+{
+  "dashboard": {
+    "title": "Chainsaw Test Results",
+    "uid": "chainsaw-results",
+    "tags": ["platform-mvp", "testing"],
+    "timezone": "browser",
+    "refresh": "1m",
+    "panels": [
+      {
+        "id": 1, "title": "Last Test Result",
+        "type": "stat", "gridPos": {"x": 0, "y": 0, "w": 4, "h": 3},
+        "targets": [{
+          "expr": "chainsaw_test_last_result",
+          "refId": "A"
+        }],
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]},
+            "mappings": [{"type": "value", "value": "1", "text": "PASS"}, {"type": "value", "value": "0", "text": "FAIL"}],
+            "noValue": "WAIT"
+          }
+        }
+      },
+      {
+        "id": 2, "title": "Last Run Duration",
+        "type": "stat", "gridPos": {"x": 4, "y": 0, "w": 4, "h": 3},
+        "targets": [{
+          "expr": "chainsaw_test_duration_ms",
+          "refId": "A"
+        }],
+        "fieldConfig": {"defaults": {"unit": "ms"}}
+      },
+      {
+        "id": 3, "title": "Pass Rate (1h)",
+        "type": "gauge", "gridPos": {"x": 8, "y": 0, "w": 4, "h": 3},
+        "targets": [{
+          "expr": "chainsaw_pass_rate_1h",
+          "refId": "A"
+        }],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percentunit",
+            "min": 0, "max": 1,
+            "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 0.8}, {"color": "green", "value": 0.95}]}
+          }
+        }
+      },
+      {
+        "id": 4, "title": "Test Run History",
+        "type": "table", "gridPos": {"x": 0, "y": 3, "w": 12, "h": 6},
+        "targets": [{
+          "expr": "{job=\"chainsaw-runner\"} | json | line_format \"{{.result}} {{.duration_ms}}ms\"",
+          "refId": "A"
+        }],
+        "transformations": [
+          {"id": "extractFields", "options": {"source": "Line", "format": "kvp"}}
+        ]
+      },
+      {
+        "id": 5, "title": "Test Duration Trend",
+        "type": "timeseries", "gridPos": {"x": 0, "y": 9, "w": 12, "h": 5},
+        "targets": [{
+          "expr": "{job=\"chainsaw-runner\"} | json duration_ms=\"duration_ms\" | unwrap duration_ms",
+          "refId": "A"
+        }],
+        "fieldConfig": {"defaults": {"unit": "ms"}}
+      }
+    ],
+    "schemaVersion": 39
+  }
+}

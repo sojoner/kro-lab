@@ -1,0 +1,39 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: chainsaw-cronjob-running
+spec:
+  description: "Phase 7 — Verify Chainsaw CronJob runs and pushes results to Loki"
+  steps:
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            namespace: monitoring
+            name: chainsaw-runner
+        timeout: 30s
+    cluster: hub
+  - try:
+    - script:
+        timeout: 30s
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring \
+            create job --from=cronjob/chainsaw-runner chainsaw-runner-manual-$(date +%s) \
+            --dry-run=client -o yaml | kubectl apply -f -
+    cluster: hub
+  - try:
+    - script:
+        timeout: 5m
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring \
+            wait --for=condition=Complete job -l app=chainsaw-runner --timeout=5m 2>/dev/null || true
+          # Check Loki for pushed results
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/loki 13100:3100 &
+          PF_PID=$!
+          sleep 3
+          RESULTS=$(curl -s 'http://localhost:13100/loki/api/v1/query_range?query={job="chainsaw-runner"}&limit=5' 2>/dev/null || echo "{}")
+          kill $PF_PID 2>/dev/null || true
+          echo "$RESULTS" | grep -q 'test_run' || exit 1
+    cluster: hub

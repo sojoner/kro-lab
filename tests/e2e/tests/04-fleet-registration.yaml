@@ -1,0 +1,19 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: fleet-registered
+spec:
+  description: "Phase 3 — Verify fleet registration (ClusterProfile on hub)"
+  steps:
+  - try:
+    - apply:
+        file: ../../deploy/platform-mvp/fleet/clusterprofile-us.yaml
+    cluster: hub
+  - try:
+    - assert:
+        resource:
+          apiVersion: multicluster.x-k8s.io/v1alpha1
+          kind: ClusterProfile
+          metadata:
+            name: us
+    cluster: hub
