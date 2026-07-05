@@ -12,7 +12,7 @@ spec:
           kind: Deployment
           metadata:
             namespace: monitoring
-            name: kps-kube-prometheus-stack-operator
+            name: hub-kube-prometheus-stack-operator
         timeout: 2m
     cluster: hub
   - try:
@@ -22,7 +22,7 @@ spec:
           kind: StatefulSet
           metadata:
             namespace: monitoring
-            name: prometheus-kps-kube-prometheus-stack-prometheus
+            name: prometheus-hub-kube-prometheus-stack-prometheus
         timeout: 3m
     cluster: hub
   - try:
@@ -32,7 +32,7 @@ spec:
           kind: Deployment
           metadata:
             namespace: monitoring
-            name: kps-grafana
+            name: hub-grafana
         timeout: 2m
     cluster: hub
   - try:
@@ -49,7 +49,7 @@ spec:
     - script:
         timeout: 30s
         content: |
-          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring wait --for=condition=Available deploy/kps-grafana --timeout=30s
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring wait --for=condition=Available deploy/hub-grafana --timeout=30s
     cluster: hub
   - try:
     - script:
@@ -61,7 +61,7 @@ spec:
     - script:
         timeout: 60s
         content: |
-          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/kps-grafana 3000:80 &
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-grafana 3000:80 &
           PF_PID=$!
           sleep 5
           HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/health || echo "000")

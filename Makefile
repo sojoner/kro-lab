@@ -242,7 +242,7 @@ validate-p7-p9:
 grafana:
 	@echo "Port-forwarding Grafana → http://localhost:$(GRAFANA_PF_PORT)"
 	@echo "  Login: admin / admin"
-	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) port-forward svc/kps-grafana $(GRAFANA_PF_PORT):80
+	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) port-forward svc/hub-grafana $(GRAFANA_PF_PORT):80
 
 grafana-url:
 	@echo "Grafana: $(GRAFANA_URL)  ·  Login: admin / admin"

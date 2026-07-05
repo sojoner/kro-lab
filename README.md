@@ -14,16 +14,29 @@ cluster running Rook/Ceph with an S3 gateway. No cloud dependency.
 ## Architecture
 
 ```
- hub (kind-hub)                          us (kind-us)
- ┌──────────────┐                       ┌──────────────────────┐
- │ Kro RGD      │                       │ Rook/Ceph            │
- │ GlobalBucket ─┐                      │  CephCluster         │
- │              │ │  binding-controller  │  CephObjectStore     │
- │ RegionalBuck─┼─┼────────────────────▶│  CephObjectStoreUser │
- │ etRequest    │    watches hub,       │  ObjectBucketClaim   │
- │              │    creates on spoke   │  RGW S3 endpoint     │
- └──────────────┘                       └──────────────────────┘
+ hub (kind-hub)                            us (kind-us)
+ ┌──────────────────────┐                 ┌──────────────────────┐
+ │ Kro RGD              │                 │ Rook/Ceph            │
+ │ GlobalBucket ──┐     │                 │  CephCluster         │
+ │                │     │ binding-ctrl    │  CephObjectStore     │
+ │ RegionalBucket-┼─────┼────────────────▶│  CephObjectStoreUser │
+ │ Request (RBR)       │ watches hub,    │  ObjectBucketClaim   │
+ │                │     │ creates on us   │  RGW S3 endpoint     │
+ ├──────────────────────┤                 └──────────────────────┘
+ │ Observability        │
+ │  grafana             │                  host (bm4080.taildf7067.ts.net)
+ │  prometheus          │                  ┌──────────────────────┐
+ │  loki                │                  │ Tailscale            │
+ │  event-exporter      │                  │  :30080 → hub:80     │
+ │  ingress-nginx       │                  │  :30443 → hub:443    │
+ │ chainsaw CronJob     │                  │ grafana at /         │
+ └──────────────────────┘                  └──────────────────────┘
 ```
+
+| Cluster | Nodes | Purpose |
+|---------|-------|---------|
+| `kind-hub` | 1 control-plane | Hub: Kro API, observability, Flux CD, ingress |
+| `kind-us` | 1 ctrl-plane + 1 worker | Spoke: Rook/Ceph, RGW S3 |
 
 ## Prerequisites
 
@@ -35,41 +48,39 @@ cluster running Rook/Ceph with an S3 gateway. No cloud dependency.
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | 1.30+ | `kubectl version --client` |
 | [Chainsaw](https://kyverno.github.io/chainsaw/latest/quick-start/) | latest | `chainsaw version` |
 | [Helm](https://helm.sh/docs/intro/install/) | 3.16+ | `helm version` |
+| [Flux CLI](https://fluxcd.io/flux/installation/) | 2.4+ | `flux --version` |
+| [kind](https://kind.sigs.k8s.io/#installation) | 0.26+ | `kind version` |
 
-Install Chainsaw: `go install github.com/kyverno/chainsaw@latest`
-
-## Architecture
-
-```
- ┌─────────────────────────────────────────────────────────────────┐
- │  host (100.96.124.118)                                          │
- │  Tailscale: bm4080.taildf7067.ts.net                            │
- │                                                                 │
- │  ┌─────────────────────────┐    ┌─────────────────────────────┐ │
- │  │ hub (kind-hub)          │    │ us (kind-us)                │ │
- │  │                         │    │                             │ │
- │  │  ● nginx ingress :80   │    │  ● rook-ceph (RGW S3)       │ │
- │  │  ● grafana              │    │  ● CephObjectStoreUser       │ │
- │  │  ● prometheus           │    │  ● ObjectBucketClaim         │ │
- │  │  ● loki                 │    │                             │ │
- │  │  ● promtail → logs      │    │                             │ │
- │  │  ● event-exporter       │    │                             │ │
- │  │  ● chainsaw CronJob/2m  │    │                             │ │
- │  │  ● kro RGD (GlobalBucket)│   │                             │ │
- │  │  ● binding-controller ──┼────┼─ creates COSU + OBC ────────▶│
- │  │                         │    │                             │ │
- │  └─────────────────────────┘    └─────────────────────────────┘ │
- │         ▲ :80                                                      │
- │         │                                                         │
- │  http://bm4080.taildf7067.ts.net ───→ Grafana dashboards           │
- └──────────────────────────────────────────────────────────────────┘
+Install:
+```bash
+go install github.com/kyverno/chainsaw@latest
+make install-flux
 ```
 
-## Dashboard Link
+## Quick Start
 
-After deployment, access the 4 Grafana dashboards:
-
+```bash
+make all        # Full loop: lint → test → build → deploy → validate
+make grafana    # Port-forward Grafana → http://localhost:3000 (admin/admin)
+make clean      # Destroy everything
 ```
+
+### Step by Step
+
+```bash
+make lint       # go vet + gofmt check
+make test       # unit tests (root + binding-controller)
+make build      # build binding-controller binary → bin/
+make deploy     # create clusters + deploy us (Rook) + hub (LGTM + Kro + Flux)
+make validate   # run all Chainsaw E2E test suites at once
+make clean      # destroy everything
+```
+
+### Dashboard Link
+
+After deployment:
+
+```bash
 make grafana-url
 ```
 
@@ -82,164 +93,61 @@ make grafana-url
 
 Login: `admin` / `admin`
 
-## Quick Start
-
-```bash
-# Full loop: test → lint → build → deploy → validate
-make all
-
-# Or step by step:
-make lint          # go vet + gofmt check
-make test          # unit tests (root + binding-controller)
-make build         # build binding-controller binary
-make deploy        # phases 1-5: clusters, rook, fleet, kro, controller
-make validate      # run Chainsaw E2E test suites
-make clean         # destroy everything
-```
-
 ## Guided Validation — Chainsaw Test Suites
 
-Each Chainsaw test validates one phase of the platform. Run them progressively to
-learn how each layer is built and verified.
+Each test validates one layer of the platform. Run them as a group:
 
-### Test 1: Cluster Topology
-
-**What it proves**: Two kind clusters (`hub`, `us`) are running and reachable.
+### Core Platform (tests 1-6)
 
 ```bash
-make validate-p1
+make validate-p1-p6
 ```
 
-Under the hood (`tests/e2e/tests/01-hub-cluster-ready.yaml`):
-- `hub` cluster has 1 control-plane node
-- `us` cluster has 4 nodes (1 control-plane + 3 workers)
-- Cross-cluster network reachability via Docker bridge
+| Test | What It Proves |
+|------|----------------|
+| 01-hub-cluster-ready | Hub cluster has 1 node Ready |
+| 02-us-cluster-ready | Us spoke has 2 nodes (1 ctrl-plane + 1 worker) |
+| 03-rook-ceph-healthy | Rook operator deployed, Ceph reports HEALTH_OK/HEALTH_WARN |
+| 04-fleet-registration | ClusterProfile `us` registered on hub via multicluster API |
+| 05-kro-globalbucket | Kro RGD expands GlobalBucket → RegionalBucketRequest per region |
+| 06-binding-controller | Controller creates CephObjectStoreUser + ObjectBucketClaim on us |
 
-### Test 2: Rook/Ceph on Spoke
+**What this proves**: A platform team defined a `GlobalBucket` on the hub cluster.
+Kro expanded it to `RegionalBucketRequest` per region. The binding controller
+watched and provisioned real S3 bucket credentials on the Rook/Ceph spoke.
 
-**What it proves**: Real Ceph cluster with RGW S3 gateway running on spoke.
+### Observability Stack (tests 7-9)
 
 ```bash
-make validate-p2
+make validate-p7-p9
 ```
 
-Under the hood (`tests/e2e/tests/02-us-cluster-ready.yaml`, `03-rook-ceph-healthy.yaml`):
-- Loop devices attached to worker containers for OSD backing
-- Rook operator deployed, `CephCluster` and `CephObjectStore` created
-- Ceph reports `HEALTH_OK` or `HEALTH_WARN` (not error)
-- RGW S3 service reachable in-cluster
+| Test | What It Proves |
+|------|----------------|
+| 07-observability-stack | Prometheus, Grafana, Loki running; ServiceMonitors exist |
+| 08-chainsaw-cronjob | Chainsaw CronJob deployed in cluster |
+| 09-ingress-log-shipping | Ingress controller routes to Grafana, Loki accepts pushes |
 
-### Test 3: Fleet Registration
-
-**What it proves**: Hub cluster discovers spoke via `ClusterProfile` CRD.
-
-```bash
-make validate-p3
-```
-
-Under the hood (`tests/e2e/tests/04-fleet-registration.yaml`):
-- `ClusterProfile` CRD installed on hub
-- Kubeconfig Secret referencing spoke's internal address
-- `cluster-inventory-api` provider resolves `clusterProfile/us` → working client
-
-### Test 4: Kro GlobalBucket API
-
-**What it proves**: Kro ResourceGraphDefinition expands `GlobalBucket` →
-`RegionalBucketRequest` per region.
-
-```bash
-make validate-p4
-```
-
-Under the hood (`tests/e2e/tests/05-kro-globalbucket.yaml`):
-- `ResourceGraphDefinition` `globalbucket` applied on hub
-- Creating `GlobalBucket{spec: {regions: [us]}}` produces `RegionalBucketRequest
-  {name: <name>-us}` deterministically via `forEach` template
-
-### Test 5: Binding Controller
-
-**What it proves**: End-to-end — controller reconciles `RegionalBucketRequest` on
-hub, creates real Rook resources on spoke.
-
-```bash
-make validate-p5
-```
-
-Under the hood (`tests/e2e/tests/06-binding-controller.yaml`):
-- `RegionalBucketReconciler` watches hub for `RegionalBucketRequest` CRs
-- Creates `CephObjectStoreUser` + `ObjectBucketClaim` on spoke via
-  multicluster-runtime provider
-- Status propagated back: credentials, endpoint, bucket name
-
-### Test 6: Observability Stack
-
-**What it proves**: LGTM (Loki+Grafana+Prometheus) stack deployed on hub with
-ServiceMonitors for controller + Rook metrics. Chainsaw CronJob runs tests
-in-cluster and pushes results to Loki for dashboard visualization.
-
-```bash
-make validate-p7     # stack: prometheus, grafana, loki, servicemonitors
-make validate-p8     # cronjob: runs chainsaw, pushes results to loki
-```
-
-Under the hood (`tests/e2e/tests/07-observability-stack.yaml`, `08-chainsaw-cronjob.yaml`, `09-ingress-log-shipping.yaml`):
-- kube-prometheus-stack (Prometheus + Grafana + kube-state-metrics) on hub
-- Loki single-binary for log aggregation
-- Promtail DaemonSet ships container logs → Loki
-- Event exporter pushes Kubernetes events → Loki
-- nginx ingress controller + Grafana Ingress (`bm4080.taildf7067.ts.net`)
-- ServiceMonitor for `binding-controller` (reconcile metrics)
-- ServiceMonitor for `rook-ceph-mgr` (Ceph health metrics)
-- Chainsaw CronJob runs every 2m inside hub, pushes JSON reports to Loki
-- Four Grafana dashboards: Cluster Fitness, Chainsaw Results, Controller+Rook, Controller Deep Dive
-
-View dashboards:
-```bash
-make grafana-url    # get dashboard links
-```
-
-### Test 7: Chainsaw CronJob Execution
-
-**What it proves**: CronJob creates a job every 2m, which runs chainsaw inside the
-cluster, test results pushed to Loki (queryable from Grafana).
-
-```bash
-make validate-p8
-```
-
-### Test 8: Ingress & Log Shipping
-
-**What it proves**: Grafana reachable via nginx ingress on the Tailscale FQDN.
-Promtail and event exporter ship logs + events to Loki for the Deep Dive dashboard.
-
-```bash
-make validate-p9
-```
-
-### Full Suite
-
-```bash
-make validate    # all 8 Chainsaw tests (phases 1-7)
-```
+**What this proves**: LGTM stack deployed via umbrella Helm chart. Grafana
+reachable through nginx ingress. Metrics and logs aggregated.
 
 ## Development Workflow (TDD)
 
-Following `CLAUDE.md`: RED → GREEN → REFACTOR loop enforced at every change.
+```
+🔴 RED → 🟢 GREEN → 🔄 REFACTOR
+```
 
 ```bash
 # Before every change:
 make tdd-lint     # verify clean baseline
 
-# RED phase:
-# Write a failing test
+# RED: Write a failing test
 make test         # must FAIL
 
-# GREEN phase:
-# Write minimal code to pass
+# GREEN: Write minimal code to pass
 make test         # must PASS
 
-# REFACTOR phase:
-# Improve code, keep tests passing
+# REFACTOR: Improve code, keep tests passing
 make tdd-lint     # lint check
 make test         # must still PASS
 ```
@@ -248,52 +156,61 @@ make test         # must still PASS
 
 | Target | Description |
 |--------|-------------|
-| `make help` | Show all targets |
+| `make all` | Full loop: lint → test → build → deploy → validate |
 | `make test` | Run all unit tests |
 | `make test-race` | Unit tests with race detector |
 | `make test-cover` | Unit tests with coverage profiles |
 | `make lint` | go vet + gofmt check |
 | `make lint-fix` | Auto-fix formatting + go vet |
-| `make build` | Build binding-controller binary (→ `bin/`) |
-| `make deploy` | Full deployment (phases 1-5) |
-| `make deploy-p1` | Create kind clusters |
-| `make deploy-p2` | Install Rook/Ceph on `us` |
-| `make deploy-p3` | Register fleet on hub |
-| `make deploy-p4` | Apply Kro GlobalBucket RGD |
-| `make deploy-p5` | Start binding controller |
-| `make deploy-p7` | Deploy LGTM stack + chainsaw CronJob |
-| `make validate` | Run all Chainsaw E2E tests |
-| `make validate-p1..p8` | Run individual phase test |
+| `make tdd-lint` | Pre-change lint baseline |
+| `make build` | Build binding-controller binary |
+| `make deploy` | Full deployment (clusters + us + hub) |
+| `make deploy-us` | Install Rook/Ceph on us |
+| `make deploy-hub` | Install LGTM stack + Kro + Flux on hub |
+| `make validate` | Run all Chainsaw E2E tests (1-9) |
+| `make validate-p1-p6` | Core platform tests (cluster, rook, fleet, kro, binding) |
+| `make validate-p7-p9` | Observability tests (stack, cronjob, ingress) |
 | `make grafana` | Port-forward Grafana → localhost:3000 |
+| `make grafana-url` | Print dashboard URLs |
 | `make clean` | Destroy clusters and artifacts |
-| `make all` | Full loop: lint → test → build → deploy → validate |
+| `make clean-artifacts` | Remove bin/ and coverage files only |
 
 ## Project Structure
 
 ```
 .
-├── deploy/platform-mvp/     # K8s manifests
-│   ├── kind/                #   kind cluster configs
-│   ├── rook/                #   CephCluster + ObjectStore CRs
-│   ├── fleet/               #   ClusterProfile for spoke registration
-│   ├── kro/                 #   GlobalBucket ResourceGraphDefinition
-│   └── observability/       #   LGTM stack + dashboards + chainsaw CronJob
-├── hack/platform-mvp/       # Shell scripts (called by Makefile)
-├── pkg/
-│   ├── multicluster/        #   Provider, Cluster, Aware interfaces
-│   └── manager/             #   Manager wrapping a Provider
-├── providers/
-│   └── cluster-inventory-api/ # ClusterProfile-backed Provider impl
+├── deploy/platform-mvp/
+│   ├── chart/hub/                 # Umbrella Helm chart (LGTM + ingress + kro)
+│   │   ├── templates/             #   dashboards, event-exporter, servicemonitors,
+│   │   │                         #   fleet, chainsaw, kro-rgd, grafana-ingress
+│   │   ├── dashboards/            #   4 Grafana dashboard JSONs
+│   │   ├── Chart.yaml             #   Dependencies: kube-prometheus-stack, loki,
+│   │   └── values.yaml            #                  promtail, ingress-nginx
+│   ├── chart/us/                  # Umbrella Helm chart (Rook operator + cluster)
+│   │   ├── Chart.yaml             #   Dependencies: rook-ceph, rook-ceph-cluster
+│   │   └── values.yaml
+│   ├── flux/                      # Flux CD manifests
+│   │   ├── bootstrap/             #   One-time bootstrap (GitRepository, Kustomization)
+│   │   ├── helmrepositories.yaml  #   4 HelmRepository sources
+│   │   └── hub-helmrelease.yaml   #   HelmRelease for hub chart
+│   ├── kind/                      # kind cluster configs
+│   ├── rook/                      # Original Rook values (for reference)
+│   ├── fleet/                     # Original ClusterProfile (for reference)
+│   ├── kro/                       # RGD, RBAC, CRD manifests
+│   └── observability/             # Original LGTM values + Dockerfile.chainsaw-runner
+├── hack/platform-mvp/             # Shell scripts (called by Makefile)
 ├── platform-mvp/
-│   └── binding-controller/  #   RegionalBucket → spoke reconciler
-│       └── controller/      #     Reconciler + tests
-├── tests/e2e/               # Chainsaw test suites
-│   └── tests/               #   01..08 progressive validation
-├── docs/platform-mvp/       # Implementation docs per phase
-├── .claude/                 # AI assistant working docs (plans/specs)
-│   └── specs/               #   01..07 minimal specs
-├── Makefile                 # Build, deploy, validate automation
-└── README.md                # This file
+│   └── binding-controller/        # RegionalBucket → spoke reconciler (Go)
+│       └── controller/            #   Reconciler + tests
+├── providers/
+│   └── cluster-inventory-api/     # ClusterProfile-backed Provider (Go)
+├── tests/e2e/                     # Chainsaw test suites
+│   ├── tests/                     #   01..09 progressive validation
+│   └── .chainsaw.yaml
+├── docs/platform-mvp/             # Implementation docs per phase
+├── .claude/                       # AI assistant working docs (plans/specs)
+├── Makefile                       # Build, deploy, validate automation
+└── README.md                      # This file
 ```
 
 ## Cleanup

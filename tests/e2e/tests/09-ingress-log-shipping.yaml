@@ -3,7 +3,7 @@ kind: Test
 metadata:
   name: ingress-and-log-shipping
 spec:
-  description: "Phase 7 — Verify ingress controller, Grafana ingress, promtail, and event exporter"
+  description: "Phase 7 — Verify ingress controller, Grafana ingress, event exporter, and Loki ready"
   steps:
   - try:
     - assert:
@@ -11,8 +11,8 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            namespace: ingress-nginx
-            name: ingress-nginx-controller
+            namespace: monitoring
+            name: hub-ingress-nginx-controller
         timeout: 2m
     cluster: hub
   - try:
@@ -29,20 +29,10 @@ spec:
     - script:
         timeout: 60s
         content: |
-          GRAFANA_IP=$(kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n ingress-nginx get pod -l app.kubernetes.io/name=ingress-nginx -o jsonpath='{.items[0].status.podIP}')
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: bm4080.taildf7067.ts.net" "http://${GRAFANA_IP}/api/health" 2>/dev/null || echo "000")
+          INGRESS_POD_IP=$(kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring get pod -l app.kubernetes.io/name=ingress-nginx -o jsonpath='{.items[0].status.podIP}')
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: bm4080.taildf7067.ts.net" "http://${INGRESS_POD_IP}/api/health" 2>/dev/null || echo "000")
           echo "Grafana health via ingress: HTTP ${STATUS}"
           [ "$STATUS" = "200" ] || [ "$STATUS" = "302" ] || exit 1
-    cluster: hub
-  - try:
-    - assert:
-        resource:
-          apiVersion: apps/v1
-          kind: DaemonSet
-          metadata:
-            namespace: monitoring
-            name: promtail
-        timeout: 2m
     cluster: hub
   - try:
     - assert:
