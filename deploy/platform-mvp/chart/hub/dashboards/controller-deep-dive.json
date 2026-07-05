@@ -1,107 +1,269 @@
 {
-  "dashboard": {
-    "title": "Controller Deep Dive",
-    "uid": "controller-deep-dive",
-    "tags": ["platform-mvp", "controller", "debug"],
-    "timezone": "browser",
-    "refresh": "10s",
-    "panels": [
-      {
-        "id": 1, "title": "Controller Logs",
-        "type": "logs", "gridPos": {"x": 0, "y": 0, "w": 16, "h": 8},
-        "targets": [{
+  "title": "Controller Deep Dive",
+  "uid": "controller-deep-dive",
+  "tags": [
+    "platform-mvp",
+    "controller",
+    "debug"
+  ],
+  "timezone": "browser",
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Controller Logs",
+      "type": "logs",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 8
+      },
+      "targets": [
+        {
           "expr": "{namespace=\"default\"} |~ \"(?i)(regionalbucket|reconcil|spoke|created|error|ceph)\"",
           "refId": "A"
-        }],
-        "options": { "showTime": true, "showLabels": true, "wrapLogMessage": true, "sortOrder": "Descending" }
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Kubernetes Events \u2014 Controller & Rook",
+      "type": "logs",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 16,
+        "h": 6
       },
-      {
-        "id": 2, "title": "Kubernetes Events — Controller & Rook",
-        "type": "logs", "gridPos": {"x": 0, "y": 8, "w": 16, "h": 6},
-        "targets": [{
+      "targets": [
+        {
           "expr": "{job=\"kubernetes-events\"} |~ \"(?i)(bucket|rook|ceph|kro|regional|binding)\"",
           "refId": "A"
-        }],
-        "options": { "showTime": true, "showLabels": true, "wrapLogMessage": true, "sortOrder": "Descending" }
-      },
-      {
-        "id": 3, "title": "Reconcile Throughput (by result)",
-        "type": "timeseries", "gridPos": {"x": 0, "y": 14, "w": 8, "h": 5},
-        "targets": [{
-          "expr": "rate(controller_runtime_reconcile_total{controller=\"regionalbucket\"}[2m])",
-          "refId": "A", "legendFormat": "{{result}}"
-        }],
-        "fieldConfig": { "defaults": { "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } } } }
-      },
-      {
-        "id": 4, "title": "Reconcile Latency Heatmap",
-        "type": "heatmap", "gridPos": {"x": 8, "y": 14, "w": 8, "h": 5},
-        "targets": [{
-          "expr": "sum(rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"regionalbucket\"}[2m])) by (le)",
-          "refId": "A", "format": "heatmap"
-        }],
-        "fieldConfig": { "defaults": { "unit": "s" } }
-      },
-      {
-        "id": 5, "title": "Auth Flow & Connection Architecture",
-        "type": "text", "gridPos": {"x": 0, "y": 19, "w": 8, "h": 6},
-        "options": {
-          "content": "## Multi-Cluster Auth Flow\n\n```\nHub (kind-hub)                         Spoke (kind-us)\n─────────────────                      ────────────────\nKro RGD expands\n    ↓\nRegionalBucketRequest\n    ↓ (watched by controller)\nController.Reconcile()\n    │\n    ├─1. Read spec.region = \"us\"\n    │\n    ├─2. Provider.Get(ctx, \"us\")\n    │   └─ ClusterProfile/us lookup\n    │   └─ Kubeconfig Secret read\n    │   └─ rest.Config built\n    │   └─ spokeClient created\n    │\n    ├─3. ensureCOSU() ────────────────→ CephObjectStoreUser created\n    │\n    ├─4. ensureOBC()  ─────────────────→ ObjectBucketClaim created\n    │\n    └─5. updateStatus() ──────────────→ COSU.status.phase read\n                                           ↓\n                                    RBR.status.regions[] updated on hub\n\nAuth: Kubeconfig (X.509 client cert)\n      stored in Secret, referenced by ClusterProfile\n      No OIDC — service-to-service, not user-facing\n```",
-          "mode": "markdown"
         }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Reconcile Throughput (by result)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 8,
+        "h": 5
       },
-      {
-        "id": 6, "title": "Work Queue Depth",
-        "type": "gauge", "gridPos": {"x": 8, "y": 19, "w": 4, "h": 3},
-        "targets": [{ "expr": "controller_runtime_active_workers{controller=\"regionalbucket\"}", "refId": "A" }],
-        "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 10 }] } } }
-      },
-      {
-        "id": 7, "title": "Success Rate (2m)",
-        "type": "gauge", "gridPos": {"x": 12, "y": 19, "w": 4, "h": 3},
-        "targets": [{
-          "expr": "sum(rate(controller_runtime_reconcile_total{controller=\"regionalbucket\",result=\"success\"}[2m])) / sum(rate(controller_runtime_reconcile_total{controller=\"regionalbucket\"}[2m]))",
-          "refId": "A"
-        }],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percentunit", "min": 0, "max": 1,
-            "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.8 }, { "color": "green", "value": 0.95 }] }
+      "targets": [
+        {
+          "expr": "rate(controller_runtime_reconcile_total{controller=\"regionalbucket\"}[2m])",
+          "refId": "A",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 30,
+            "stacking": {
+              "mode": "normal"
+            }
           }
         }
-      },
-      {
-        "id": 10, "title": "Spoke API Latency (rest_client)",
-        "type": "timeseries", "gridPos": {"x": 8, "y": 22, "w": 8, "h": 5},
-        "targets": [{
-          "expr": "histogram_quantile(0.95, rate(rest_client_request_duration_seconds_bucket[5m]))",
-          "refId": "A", "legendFormat": "p95"
-        }, {
-          "expr": "histogram_quantile(0.50, rate(rest_client_request_duration_seconds_bucket[5m]))",
-          "refId": "B", "legendFormat": "p50"
-        }],
-        "fieldConfig": { "defaults": { "unit": "s" } }
-      },
-      {
-        "id": 11, "title": "Spoke Resource Status",
-        "type": "table", "gridPos": {"x": 0, "y": 25, "w": 8, "h": 5},
-        "targets": [{
-          "expr": "count by (exported_namespace, name) (ceph_osd_up)",
-          "refId": "A", "format": "table", "legendFormat": "OSDs up"
-        }]
-      },
-      {
-        "id": 12, "title": "RGW Request Breakdown",
-        "type": "timeseries", "gridPos": {"x": 8, "y": 27, "w": 8, "h": 5},
-        "targets": [{
-          "expr": "rate(ceph_rgw_req[2m])",
-          "refId": "A", "legendFormat": "{{operation}}"
-        }, {
-          "expr": "rate(ceph_rgw_failed_req[2m])",
-          "refId": "B", "legendFormat": "failed"
-        }]
       }
-    ],
-    "schemaVersion": 39
-  }
+    },
+    {
+      "id": 4,
+      "title": "Reconcile Latency Heatmap",
+      "type": "heatmap",
+      "gridPos": {
+        "x": 8,
+        "y": 14,
+        "w": 8,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"regionalbucket\"}[2m])) by (le)",
+          "refId": "A",
+          "format": "heatmap"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Auth Flow & Connection Architecture",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 19,
+        "w": 8,
+        "h": 6
+      },
+      "options": {
+        "content": "## Multi-Cluster Auth Flow\n\n```\nHub (kind-hub)                         Spoke (kind-us)\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500                      \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nKro RGD expands\n    \u2193\nRegionalBucketRequest\n    \u2193 (watched by controller)\nController.Reconcile()\n    \u2502\n    \u251c\u25001. Read spec.region = \"us\"\n    \u2502\n    \u251c\u25002. Provider.Get(ctx, \"us\")\n    \u2502   \u2514\u2500 ClusterProfile/us lookup\n    \u2502   \u2514\u2500 Kubeconfig Secret read\n    \u2502   \u2514\u2500 rest.Config built\n    \u2502   \u2514\u2500 spokeClient created\n    \u2502\n    \u251c\u25003. ensureCOSU() \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2192 CephObjectStoreUser created\n    \u2502\n    \u251c\u25004. ensureOBC()  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2192 ObjectBucketClaim created\n    \u2502\n    \u2514\u25005. updateStatus() \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2192 COSU.status.phase read\n                                           \u2193\n                                    RBR.status.regions[] updated on hub\n\nAuth: Kubeconfig (X.509 client cert)\n      stored in Secret, referenced by ClusterProfile\n      No OIDC \u2014 service-to-service, not user-facing\n```",
+        "mode": "markdown"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Work Queue Depth",
+      "type": "gauge",
+      "gridPos": {
+        "x": 8,
+        "y": 19,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "controller_runtime_active_workers{controller=\"regionalbucket\"}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Success Rate (2m)",
+      "type": "gauge",
+      "gridPos": {
+        "x": 12,
+        "y": 19,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(controller_runtime_reconcile_total{controller=\"regionalbucket\",result=\"success\"}[2m])) / sum(rate(controller_runtime_reconcile_total{controller=\"regionalbucket\"}[2m]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.8
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Spoke API Latency (rest_client)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 22,
+        "w": 8,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(rest_client_request_duration_seconds_bucket[5m]))",
+          "refId": "A",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.50, rate(rest_client_request_duration_seconds_bucket[5m]))",
+          "refId": "B",
+          "legendFormat": "p50"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Spoke Resource Status",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 8,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "count by (exported_namespace, name) (ceph_osd_up)",
+          "refId": "A",
+          "format": "table",
+          "legendFormat": "OSDs up"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "RGW Request Breakdown",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 27,
+        "w": 8,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "rate(ceph_rgw_req[2m])",
+          "refId": "A",
+          "legendFormat": "{{operation}}"
+        },
+        {
+          "expr": "rate(ceph_rgw_failed_req[2m])",
+          "refId": "B",
+          "legendFormat": "failed"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39
 }
