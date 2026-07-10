@@ -1,0 +1,55 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: kro-globalwidget-rgd
+spec:
+  description: "Phase 4 — Verify Kro GlobalWidget RGD creates RegionalWidgetRequest"
+  steps:
+  # The GlobalWidget RGD is already installed on hub via the real chart/hub
+  # Helm release (kept in sync by Flux) — this test exercises that live
+  # deployment rather than re-applying its own copy of the manifest.
+  - try:
+    - assert:
+        resource:
+          apiVersion: kro.run/v1alpha1
+          kind: ResourceGraphDefinition
+          metadata:
+            name: globalwidget.platform.example.com
+          status:
+            state: Active
+        timeout: 30s
+    cluster: hub
+  - try:
+    - apply:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: GlobalWidget
+          metadata:
+            name: e2e-test-widget
+            namespace: default
+          spec:
+            regions: [us]
+            message: "hello from e2e"
+    cluster: hub
+    # binding-controller asynchronously creates a Widget on us for this
+    # RegionalWidgetRequest too; clean it up since it has no cross-cluster
+    # deletion handling of its own (see 06-binding-controller for why this
+    # matters for repeated test runs).
+    finally:
+    - delete:
+        ref:
+          apiVersion: platform.example.com/v1alpha1
+          kind: Widget
+          name: e2e-test-widget-us
+          namespace: default
+        cluster: us
+  - try:
+    - assert:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalWidgetRequest
+          metadata:
+            name: e2e-test-widget-us
+            namespace: default
+        timeout: 30s
+    cluster: hub

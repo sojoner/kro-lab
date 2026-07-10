@@ -63,9 +63,7 @@ help:
 	@echo "  make chainsaw-runner  Build + load chainsaw-runner image"
 	@echo ""
 	@echo "Validate:"
-	@echo "  make validate    Run full Chainsaw E2E suite"
-	@echo "  make validate-p1-p6  Run platform tests (p1-p5)"
-	@echo "  make validate-p7-p9  Run observability tests (p7-p9)"
+	@echo "  make validate    Run full Chainsaw E2E suite (per-test filtering is broken upstream in v0.2.15, so validate-p1-p6/p7-p9 just alias this)"
 	@echo ""
 	@echo "Grafana:"
 	@echo "  make grafana     Port-forward → localhost:3000"
@@ -229,17 +227,31 @@ chainsaw-runner:
 validate:
 	@echo "==> Running full Chainsaw E2E test suite"
 	@mkdir -p $(CHAINSAW_DIR)
-	@if [ ! -f $(CHAINSAW_DIR)/kubeconfig-hub ]; then cp "$(HOME)/.kube/config" $(CHAINSAW_DIR)/kubeconfig-hub; fi
-	@if [ ! -f $(CHAINSAW_DIR)/kubeconfig-us-internal ]; then cp $(BC_INTERNAL_KC) $(CHAINSAW_DIR)/kubeconfig-us-internal; fi
-	chainsaw test $(CHAINSAW_DIR) --report-format JSON --report-name $(CHAINSAW_REPORT)
+	@# Always regenerate — a stale kubeconfig here (e.g. after a cluster was
+	@# recreated) fails with an opaque TLS/auth error, not a clear "stale
+	@# config" message, so it's cheaper to just always refresh both.
+	@# NOTE: kept as "-internal" to match the path baked into the
+	@# chainsaw-runner CronJob image (which runs *inside* the hub cluster's
+	@# Docker network, where the internal address resolves) — but `make
+	@# validate` itself runs from a plain host shell, where "us-control-plane"
+	@# is not resolvable, so this must be the host-accessible kubeconfig.
+	kind get kubeconfig --name $(KIND_HUB) > $(CHAINSAW_DIR)/kubeconfig-hub
+	kind get kubeconfig --name $(KIND_US) > $(CHAINSAW_DIR)/kubeconfig-us-internal
+	@# chainsaw only picks up .chainsaw.yaml (with the hub/us cluster mapping)
+	@# from its own current directory — passing $(CHAINSAW_DIR) as an argument
+	@# without cd'ing into it silently falls back to no-cluster defaults and
+	@# every test fails.
+	cd $(CHAINSAW_DIR) && chainsaw test . --test-dir tests --fail-fast=false \
+		--report-format JSON --report-name $(CHAINSAW_REPORT)
 
-validate-p1-p6:
-	chainsaw test $(CHAINSAW_DIR) --test-dir $(CHAINSAW_DIR)/tests \
-		--selector 'test=01-hub-cluster-ready,test=02-us-cluster-ready,test=04-fleet-registration,test=05-kro-globalwidget,test=06-binding-controller'
+# NOTE: --selector and --include-test-regex are both non-functional for
+# per-test filtering in chainsaw v0.2.15 (verified empirically 2026-07-10 —
+# every syntax tried matched 0 tests even against exact test names). Until
+# that's fixed upstream or worked around, these both just run the full
+# suite; use `make validate` directly instead.
+validate-p1-p6: validate
 
-validate-p7-p9:
-	chainsaw test $(CHAINSAW_DIR) --test-dir $(CHAINSAW_DIR)/tests \
-		--selector 'test=07-observability-stack,test=08-chainsaw-cronjob,test=09-ingress-log-shipping'
+validate-p7-p9: validate
 
 # ── Grafana ──────────────────────────────────────────────────────────────────
 .PHONY: grafana grafana-url
@@ -261,7 +273,7 @@ clean:
 	kind delete cluster --name $(KIND_HUB) 2>/dev/null || true
 	kind delete cluster --name $(KIND_US) 2>/dev/null || true
 	rm -f $(BC_INTERNAL_KC)
-	rm -f $(CHAINSAW_DIR)/kubeconfig-hub $(CHAINSAW_DIR)/kubeconfig-us-internal $(CHAINSAW_REPORT)
+	rm -f $(CHAINSAW_DIR)/kubeconfig-hub $(CHAINSAW_DIR)/kubeconfig-us-internal $(CHAINSAW_DIR)/$(CHAINSAW_REPORT)
 
 clean-artifacts:
 	rm -rf $(OUT_DIR) coverage-root.out coverage-bc.out coverage-wo.out

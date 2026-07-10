@@ -1,0 +1,84 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: binding-controller-status-roundtrip
+spec:
+  description: >
+    Phase 5 — Verify the binding controller creates a Widget on the us spoke
+    for a RegionalWidgetRequest, and that the Widget's status (set by the
+    widget-operator on us) propagates back through RegionalWidgetRequest.status
+    all the way to GlobalWidget.status on the hub — the actual
+    multicluster-runtime cross-cluster fan-out this MVP exists to prove.
+    Self-contained (applies its own GlobalWidget) rather than depending on
+    the 05 test's object, since chainsaw does not guarantee ordering between
+    independent Test resources.
+  steps:
+  - try:
+    - apply:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: GlobalWidget
+          metadata:
+            name: e2e-test-widget-bc
+            namespace: default
+          spec:
+            regions: [us]
+            message: "hello from the binding-controller status-roundtrip test"
+    cluster: hub
+    # binding-controller has no cross-cluster deletion handling, so deleting
+    # GlobalWidget on hub does not clean up the Widget it created on us —
+    # without this, a leftover Ready Widget from a prior run would be found
+    # as already-existing by the next run and never re-trigger a status
+    # propagation event, since nothing about it would actually change.
+    finally:
+    - delete:
+        ref:
+          apiVersion: platform.example.com/v1alpha1
+          kind: Widget
+          name: e2e-test-widget-bc-us
+          namespace: default
+        cluster: us
+  - try:
+    - assert:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: Widget
+          metadata:
+            namespace: default
+            name: e2e-test-widget-bc-us
+          status:
+            phase: Ready
+            endpoint: widget://default/e2e-test-widget-bc-us
+        timeout: 30s
+    cluster: us
+  - try:
+    - assert:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalWidgetRequest
+          metadata:
+            name: e2e-test-widget-bc-us
+            namespace: default
+          status:
+            regions:
+            - region: us
+              phase: Ready
+              endpoint: widget://default/e2e-test-widget-bc-us
+        timeout: 30s
+    cluster: hub
+  - try:
+    - assert:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: GlobalWidget
+          metadata:
+            name: e2e-test-widget-bc
+            namespace: default
+          status:
+            regions:
+            - regions:
+              - region: us
+                phase: Ready
+                endpoint: widget://default/e2e-test-widget-bc-us
+        timeout: 30s
+    cluster: hub

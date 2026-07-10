@@ -1,14 +1,13 @@
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: us-cluster-ready
+  name: hub-cluster-ready
 spec:
-  description: "Phase 1 — Verify us spoke cluster is operational with 2 nodes"
+  description: "Phase 1 — Verify hub cluster is operational"
   steps:
   - try:
     - assert:
         resource:
           apiVersion: v1
           kind: Node
-        count: 2
-    cluster: us
+    cluster: hub
