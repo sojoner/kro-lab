@@ -9,3 +9,30 @@ widgetOperator:
   resources:
     requests: { cpu: 20m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }
+
+oidcVerifier:
+  enabled: true
+  replicas: 1
+  issuer: "https://bm4080.taildf7067.ts.net/dex"
+  audience: ""
+  insecureSkipVerify: true
+  trustJWKS: |
+    {
+      "keys": [
+        {
+          "alg": "RS256",
+          "e": "AQAB",
+          "kid": "test-key-001",
+          "kty": "RSA",
+          "n": "ujOk4S16brZhQOwEBkOkQZjVSaY78vNcqR_ZyujcmQc3N3Ox1y_vshyF1fZBVYmGtPL93vFdw5NIBYuaVYhGtqUfjBQ4uLFtaLYC00m8oniJiJ0upnr3oqn96aw1tDmYLazd3gw_KQNpB2wIj3_IyIUjGZnVBd6CwrVxe1H87ts5GJwmhQ_1f_WcSE6HmCFdVstZR8lQlyjpTSQmz2G6GLUsDMkpOaCKXzHgjPGVeedLA6CDpJhQX4EJv43xYciao0RFHC8MpGze20Bkk8rOSgmoJqTSQjpquUAjBm0OD-zloYACpwzxPJ_y9VmA9W1qZh17hWpho-x0wPuKdVC0dw",
+          "use": "sig"
+        }
+      ]
+    }
+  image:
+    repository: oidc-verifier
+    tag: local
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 10m, memory: 16Mi }
+    limits: { cpu: 50m, memory: 64Mi }

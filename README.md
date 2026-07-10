@@ -20,22 +20,25 @@ cluster running a trivial widget-operator. No cloud dependency.
  │                │     │ binding-ctrl    │                      │
  │ RegionalWidget─┼─────┼────────────────▶│  Widget instances    │
  │ Request (RWR)       │ watches hub,    │                      │
- │                │     │ creates on us   │                      │
- ├──────────────────────┤                 └──────────────────────┘
- │ Observability        │
- │  grafana             │                  host (bm4080.taildf7067.ts.net)
- │  prometheus          │                  ┌──────────────────────┐
- │  loki                │                  │ Tailscale            │
- │  event-exporter      │                  │  :30080 → hub:80     │
- │  ingress-nginx       │                  │  :30443 → hub:443    │
+ │                │     │ creates on us   │ oidc-verifier        │
+ ├──────────────────────┤                 │  /verify (JWKS-based)│
+ │ Observability        │                 │  AUDIT → stdout      │
+ │  grafana             │                 └──────────────────────┘
+ │  prometheus          │
+ │  loki                │                  host (bm4080.taildf7067.ts.net)
+ │  event-exporter      │                  ┌──────────────────────┐
+ │  ingress-nginx       │                  │ Tailscale            │
+ │ Dex IDP (OIDC)       │                  │  :30080 → hub:80     │
+ │ cert-manager (TLS)   │                  │  :30443 → hub:443    │
  │ chainsaw CronJob     │                  │ grafana at /         │
- └──────────────────────┘                  └──────────────────────┘
+ └──────────────────────┘                  │ dex at /dex          │
+                                           └──────────────────────┘
 ```
 
 | Cluster | Nodes | Purpose |
 |---------|-------|---------|
-| `kind-hub` | 1 control-plane | Hub: Kro API, observability, Flux CD, ingress |
-| `kind-us` | 1 ctrl-plane + 1 worker | Spoke: widget-operator |
+| `kind-hub` | 1 control-plane | Hub: Kro API, observability, Dex OIDC, cert-manager, Flux CD, ingress |
+| `kind-us` | 1 ctrl-plane + 1 worker | Spoke: widget-operator, oidc-verifier |
 
 ## Prerequisites
 
@@ -127,6 +130,20 @@ make validate-p7-p9
 **What this proves**: LGTM stack deployed via umbrella Helm chart. Grafana
 reachable through nginx ingress. Metrics and logs aggregated.
 
+### OIDC Trust (test 10)
+
+```bash
+chainsaw test tests/e2e --test 10-oidc-trust
+```
+
+| Test | What It Proves |
+|------|----------------|
+| 10-oidc-trust | Dex issues JWT, oidc-verifier on spoke validates, audit logs in Loki |
+
+**What this proves**: Workload identity (client_credentials) flows from hub Dex
+IDP to spoke oidc-verifier. Cross-cluster JWKS-based trust. Full audit trail
+from JWT verification → stdout → promtail → Loki → Grafana.
+
 ## Development Workflow (TDD)
 
 ```
@@ -153,17 +170,18 @@ make test         # must still PASS
 | Target | Description |
 |--------|-------------|
 | `make all` | Full loop: lint → test → build → deploy → validate |
-| `make test` | Run all unit tests |
+| `make test` | Run all unit tests (includes oidc-verifier) |
 | `make test-race` | Unit tests with race detector |
 | `make test-cover` | Unit tests with coverage profiles |
-| `make lint` | go vet + gofmt check |
+| `make lint` | go vet + gofmt check (incl. oidc-verifier) |
 | `make lint-fix` | Auto-fix formatting + go vet |
 | `make tdd-lint` | Pre-change lint baseline |
 | `make build` | Build binding-controller binary |
+| `make oidc-verifier-image` | Build + load oidc-verifier Docker image |
 | `make deploy` | Full deployment (clusters + us + hub) |
-| `make deploy-us` | Install widget-operator on us |
-| `make deploy-hub` | Install LGTM stack + Kro + Flux on hub |
-| `make validate` | Run all Chainsaw E2E tests (1-9) |
+| `make deploy-us` | Install widget-operator + oidc-verifier on us |
+| `make deploy-hub` | Install LGTM + Dex + cert-manager + Kro + Flux on hub |
+| `make validate` | Run all Chainsaw E2E tests (1-10) |
 | `make validate-p1-p6` | Core platform tests (cluster, fleet, kro, binding) |
 | `make validate-p7-p9` | Observability tests (stack, cronjob, ingress) |
 | `make grafana` | Port-forward Grafana → localhost:3000 |
@@ -176,14 +194,16 @@ make test         # must still PASS
 ```
 .
 ├── deploy/platform-mvp/
-│   ├── chart/hub/                 # Umbrella Helm chart (LGTM + ingress + kro)
+│   ├── chart/hub/                 # Umbrella Helm chart (LGTM + ingress + Dex + cert-manager)
 │   │   ├── templates/             #   dashboards, event-exporter, servicemonitors,
-│   │   │                         #   fleet, chainsaw, kro-rgd, grafana-ingress
+│   │   │                         #   fleet, chainsaw, kro-rgd, grafana-ingress,
+│   │   │                         #   dex, dex-ingress, cert-manager, binding-controller
 │   │   ├── dashboards/            #   3 Grafana dashboard JSONs
-│   │   ├── Chart.yaml             #   Dependencies: kube-prometheus-stack, loki,
-│   │   └── values.yaml            #                  promtail, ingress-nginx
-│   ├── chart/us/                  # Helm chart (widget-operator)
+│   │   ├── Chart.yaml             #   Dependencies: kube-prometheus-stack, loki, promtail,
+│   │   └── values.yaml            #                  ingress-nginx, cert-manager
+│   ├── chart/us/                  # Helm chart (widget-operator + oidc-verifier)
 │   │   ├── templates/widget-operator.yaml
+│   │   ├── templates/oidc-verifier.yaml
 │   │   ├── Chart.yaml
 │   │   └── values.yaml
 │   ├── flux/                      # Flux CD manifests
@@ -198,13 +218,14 @@ make test         # must still PASS
 ├── platform-mvp/
 │   ├── binding-controller/        # RegionalWidgetRequest → spoke reconciler (Go)
 │   │   └── controller/            #   Reconciler + tests
-│   └── widget-operator/           # Trivial spoke operator (Go)
+│   ├── widget-operator/           # Trivial spoke operator (Go)
+│   └── oidc-verifier/             # JWKS-based JWT verifier (Go)
 ├── providers/
 │   └── cluster-inventory-api/     # ClusterProfile-backed Provider (Go)
 ├── tests/e2e/                     # Chainsaw test suites
-│   ├── tests/                     #   01..09 progressive validation
+│   ├── tests/                     #   01..10 progressive validation
 │   └── .chainsaw.yaml
-├── docs/platform-mvp/             # Implementation docs per phase
+├── docs/platform-mvp/             # Implementation docs per phase (incl. OIDC)
 ├── .claude/                       # AI assistant working docs (plans/specs)
 ├── Makefile                       # Build, deploy, validate automation
 └── README.md                      # This file

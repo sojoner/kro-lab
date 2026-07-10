@@ -1,6 +1,22 @@
 ingress:
   host: bm4080.taildf7067.ts.net
 
+cert-manager:
+  enabled: true
+  installCRDs: true
+
+dex:
+  enabled: true
+  namespace: monitoring
+  issuer: "https://bm4080.taildf7067.ts.net/dex"
+  image:
+    repository: ghcr.io/dexidp/dex
+    tag: v2.42.0
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { cpu: 100m, memory: 128Mi }
+
 bindingController:
   replicas: 1
   metricsPort: 8080

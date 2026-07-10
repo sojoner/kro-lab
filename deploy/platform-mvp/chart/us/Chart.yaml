@@ -1,4 +1,4 @@
 apiVersion: v2
 name: us
-description: Platform MVP us spoke — widget-operator
-version: 0.1.0
+description: Platform MVP us spoke — widget-operator + oidc-verifier
+version: 0.2.0

@@ -42,6 +42,10 @@ WO_DIR             ?= platform-mvp/widget-operator
 
 FLUX_DIR           ?= deploy/platform-mvp/flux
 
+CERT_MANAGER_VERSION ?= v1.17.1
+OIDC_VERIFIER_IMAGE  ?= oidc-verifier:local
+OIDC_VERIFIER_DIR    ?= platform-mvp/oidc-verifier
+
 # ── Help ─────────────────────────────────────────────────────────────────────
 .PHONY: help
 help:
@@ -74,7 +78,7 @@ help:
 
 # ── Test ─────────────────────────────────────────────────────────────────────
 .PHONY: test test-root test-bc test-race test-cover
-test: test-root test-bc test-wo
+test: test-root test-bc test-wo test-ov
 	@echo "==> All unit tests passed"
 
 test-root:
@@ -86,10 +90,14 @@ test-bc:
 test-wo:
 	cd platform-mvp/widget-operator && go test ./... -count=1
 
+test-ov:
+	cd $(OIDC_VERIFIER_DIR) && go test ./... -count=1
+
 test-race:
 	go test -race ./... -count=1
 	cd platform-mvp/binding-controller && go test -race ./... -count=1
 	cd platform-mvp/widget-operator && go test -race ./... -count=1
+	cd $(OIDC_VERIFIER_DIR) && go test -race ./... -count=1
 
 test-cover:
 	go test -coverprofile=coverage-root.out ./...
@@ -104,6 +112,7 @@ lint:
 	go vet ./...
 	cd platform-mvp/binding-controller && go vet ./...
 	cd platform-mvp/widget-operator && go vet ./...
+	cd $(OIDC_VERIFIER_DIR) && go vet ./...
 	@if [ -n "$$(gofmt -l .)" ]; then \
 		echo "ERROR: files not formatted:"; \
 		gofmt -l .; \
@@ -114,9 +123,11 @@ lint-fix:
 	gofmt -w .
 	cd platform-mvp/binding-controller && gofmt -w .
 	cd platform-mvp/widget-operator && gofmt -w .
+	cd $(OIDC_VERIFIER_DIR) && gofmt -w .
 	go vet ./...
 	cd platform-mvp/binding-controller && go vet ./...
 	cd platform-mvp/widget-operator && go vet ./...
+	cd $(OIDC_VERIFIER_DIR) && go vet ./...
 
 tdd-lint: lint
 
@@ -156,8 +167,13 @@ widget-operator-image:
 	docker build -f $(WO_DIR)/Dockerfile -t $(WO_IMAGE) .
 	kind load docker-image $(WO_IMAGE) --name $(KIND_US)
 
-deploy-us: widget-operator-image
-	@echo "==> Deploying widget-operator on us"
+oidc-verifier-image:
+	@echo "==> Building oidc-verifier image"
+	docker build -f $(OIDC_VERIFIER_DIR)/Dockerfile -t $(OIDC_VERIFIER_IMAGE) .
+	kind load docker-image $(OIDC_VERIFIER_IMAGE) --name $(KIND_US)
+
+deploy-us: widget-operator-image oidc-verifier-image
+	@echo "==> Deploying widget-operator + oidc-verifier on us"
 	kubectl --context kind-$(KIND_US) create namespace default --dry-run=client -o yaml | kubectl apply -f -
 	helm upgrade --install us $(US_CHART) \
 		-n default --create-namespace --wait --timeout $(HELM_TIMEOUT) \
@@ -165,7 +181,10 @@ deploy-us: widget-operator-image
 	@echo "  Restarting widget-operator (picks up freshly-loaded image under its fixed :local tag)"
 	kubectl --context kind-$(KIND_US) -n default rollout restart deployment/widget-operator
 	kubectl --context kind-$(KIND_US) -n default rollout status deployment/widget-operator --timeout=60s
-	@echo "==> Widget operator deployed"
+	@echo "  Restarting oidc-verifier"
+	kubectl --context kind-$(KIND_US) -n default rollout restart deployment/oidc-verifier 2>/dev/null || true
+	kubectl --context kind-$(KIND_US) -n default rollout status deployment/oidc-verifier --timeout=60s
+	@echo "==> Widget operator + oidc-verifier deployed"
 
 binding-controller-image:
 	@echo "==> Building binding-controller image"
@@ -182,6 +201,8 @@ deploy-hub: binding-controller-image
 	kubectl --context kind-$(KIND_HUB) wait --for=condition=Established crd/resourcegraphdefinitions.kro.run --timeout=30s
 	@echo "  Installing ClusterProfile CRD..."
 	kubectl --context kind-$(KIND_HUB) apply -f https://raw.githubusercontent.com/kubernetes-sigs/cluster-inventory-api/main/config/crd/bases/multicluster.x-k8s.io_clusterprofiles.yaml
+	@echo "  Installing cert-manager CRDs (required before Helm creates Certificate resources)"
+	kubectl --context kind-$(KIND_HUB) apply -f https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.crds.yaml
 	@echo "==> Deploying hub (umbrella chart)"
 	@if [ ! -f $(BC_INTERNAL_KC) ]; then \
 		kind get kubeconfig --name $(KIND_US) --internal > $(BC_INTERNAL_KC); \
@@ -191,6 +212,10 @@ deploy-hub: binding-controller-image
 		-n $(OBS_NS) --create-namespace --wait --timeout $(HELM_TIMEOUT) \
 		--set ingress.host=$(INGRESS_HOST) \
 		--kube-context kind-$(KIND_HUB)
+	@echo "  Waiting for cert-manager..."
+	kubectl --context kind-$(KIND_HUB) -n cert-manager rollout status deploy/cert-manager --timeout=2m
+	@echo "  Waiting for Dex..."
+	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) rollout status deploy/dex --timeout=2m
 	@echo "  Creating us-kubeconfig secret..."
 	kubectl --context kind-$(KIND_HUB) create secret generic us-kubeconfig \
 		--from-file=value=$(BC_INTERNAL_KC) \

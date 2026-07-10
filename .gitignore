@@ -24,3 +24,12 @@ deploy/platform-mvp/chart/*/Chart.lock
 
 # Chainsaw test run artifacts
 tests/e2e/chainsaw-report.json
+
+# Cryptographic key material (do not commit)
+*.pem
+*.key
+*.pub
+*.jwks
+*.jwt
+*.p12
+*.pfx

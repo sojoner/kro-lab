@@ -53,4 +53,5 @@ make clean
 4. [Kro GlobalWidget API](04-kro-globalwidget-api.md)
 5. [Binding controller](05-binding-controller.md)
 6. [E2E verification](06-e2e-verification.md)
-99. [Extending to EU/ASIA](99-extending-to-eu-asia.md)
+7. [Multi-cluster OIDC trust](10-oidc-trust.md)
+8. [Extending to EU/ASIA](99-extending-to-eu-asia.md)
