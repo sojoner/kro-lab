@@ -56,31 +56,7 @@ data:
             resource:
               apiVersion: v1
               kind: Node
-            count: 4
-        cluster: us
-  03-rook-ceph-healthy.yaml: |
-    apiVersion: chainsaw.kyverno.io/v1alpha1
-    kind: Test
-    metadata:
-      name: rook-ceph-healthy
-    spec:
-      description: "Phase 2 — Verify Rook/Ceph is healthy on us"
-      steps:
-      - try:
-        - assert:
-            resource:
-              apiVersion: apps/v1
-              kind: Deployment
-              metadata:
-                namespace: rook-ceph
-                name: rook-ceph-operator
-            timeout: 2m
-        cluster: us
-      - try:
-        - script:
-            timeout: 3m
-            content: |
-              kubectl --kubeconfig /tmp/chainsaw/kubeconfig-us-internal -n rook-ceph exec deploy/rook-ceph-tools -- ceph status | grep -E 'HEALTH_(OK|WARN)'
+            count: 2
         cluster: us
   04-fleet-registration.yaml: |
     apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -98,21 +74,21 @@ data:
               metadata:
                 name: us
         cluster: hub
-  05-kro-globalbucket.yaml: |
+  05-kro-globalwidget.yaml: |
     apiVersion: chainsaw.kyverno.io/v1alpha1
     kind: Test
     metadata:
-      name: kro-globalbucket-rgd
+      name: kro-globalwidget-rgd
     spec:
-      description: "Phase 4 — Verify Kro RGD creates RegionalBucketRequest"
+      description: "Phase 4 — Verify Kro GlobalWidget RGD creates RegionalWidgetRequest"
       steps:
       - try:
         - assert:
             resource:
               apiVersion: platform.example.com/v1alpha1
-              kind: RegionalBucketRequest
+              kind: RegionalWidgetRequest
               metadata:
-                name: e2e-test-bucket-us
+                name: e2e-test-widget-us
             timeout: 30s
         cluster: hub
   06-binding-controller.yaml: |
@@ -121,26 +97,16 @@ data:
     metadata:
       name: binding-controller-creates-spoke-resources
     spec:
-      description: "Phase 5 — Verify binding controller creates Rook resources on us"
+      description: "Phase 5 — Verify binding controller creates Widget on us spoke"
       steps:
       - try:
         - assert:
             resource:
-              apiVersion: ceph.rook.io/v1
-              kind: CephObjectStoreUser
+              apiVersion: platform.example.com/v1alpha1
+              kind: Widget
               metadata:
-                namespace: rook-ceph
-                name: e2e-test-bucket-us
-            timeout: 30s
-        cluster: us
-      - try:
-        - assert:
-            resource:
-              apiVersion: objectbucket.io/v1alpha1
-              kind: ObjectBucketClaim
-              metadata:
-                namespace: rook-ceph
-                name: e2e-test-bucket-us
+                namespace: default
+                name: e2e-test-widget-us
             timeout: 30s
         cluster: us
 ---

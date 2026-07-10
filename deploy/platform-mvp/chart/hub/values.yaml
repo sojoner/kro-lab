@@ -34,17 +34,7 @@ kube-prometheus-stack:
       serviceMonitorSelector: {}
       podMonitorSelector: {}
       ruleSelector: {}
-      additionalScrapeConfigs:
-        - job_name: rook-ceph-mgr
-          kubernetes_sd_configs:
-            - role: pod
-              namespaces: { names: [rook-ceph] }
-          relabel_configs:
-            - source_labels: [__meta_kubernetes_pod_label_app]
-              action: keep
-              regex: rook-ceph-mgr
-            - action: labelmap
-              regex: __meta_kubernetes_pod_label_(.+)
+      additionalScrapeConfigs: []
   grafana:
     adminPassword: admin
     resources:

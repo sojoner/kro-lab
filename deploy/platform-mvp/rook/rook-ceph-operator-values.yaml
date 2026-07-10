@@ -1,9 +1,0 @@
-# Rook Ceph Operator Helm values
-# Upstream: rook-release/rook-ceph
-# Usage: helm upgrade --install rook-ceph rook-release/rook-ceph -n rook-ceph -f this.yaml
-
-psp:
-  enableOBCs: true
-
-enableDiscoveryDaemon: true
-discoveryDaemonInterval: 60m

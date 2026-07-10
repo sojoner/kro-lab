@@ -77,12 +77,3 @@ spec:
             namespace: monitoring
             name: binding-controller
     cluster: hub
-  - try:
-    - assert:
-        resource:
-          apiVersion: monitoring.coreos.com/v1
-          kind: ServiceMonitor
-          metadata:
-            namespace: monitoring
-            name: rook-ceph-mgr
-    cluster: hub

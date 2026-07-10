@@ -10,16 +10,16 @@
         "id": 1, "title": "Controller Logs",
         "type": "logs", "gridPos": {"x": 0, "y": 0, "w": 16, "h": 8},
         "targets": [{
-          "expr": "{namespace=\"default\"} |~ \"(?i)(regionalbucket|reconcil|spoke|created|error|ceph)\"",
+          "expr": "{namespace=\"default\"} |~ \"(?i)(regionalwidgetrequest|reconcil|spoke|created|error|widget)\"",
           "refId": "A"
         }],
         "options": { "showTime": true, "showLabels": true, "wrapLogMessage": true, "sortOrder": "Descending" }
       },
       {
-        "id": 2, "title": "Kubernetes Events — Controller & Rook",
+        "id": 2, "title": "Kubernetes Events — Controller & Spoke",
         "type": "logs", "gridPos": {"x": 0, "y": 8, "w": 16, "h": 6},
         "targets": [{
-          "expr": "{job=\"kubernetes-events\"} |~ \"(?i)(bucket|rook|ceph|kro|regional|binding)\"",
+          "expr": "{job=\"kubernetes-events\"} |~ \"(?i)(widget|kro|regional|binding)\"",
           "refId": "A"
         }],
         "options": { "showTime": true, "showLabels": true, "wrapLogMessage": true, "sortOrder": "Descending" }
@@ -28,7 +28,7 @@
         "id": 3, "title": "Reconcile Throughput (by result)",
         "type": "timeseries", "gridPos": {"x": 0, "y": 14, "w": 8, "h": 5},
         "targets": [{
-          "expr": "rate(controller_runtime_reconcile_total{controller=\"regionalbucket\"}[2m])",
+          "expr": "rate(controller_runtime_reconcile_total{controller=\"regionalwidgetrequest\"}[2m])",
           "refId": "A", "legendFormat": "{{result}}"
         }],
         "fieldConfig": { "defaults": { "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } } } }
@@ -37,7 +37,7 @@
         "id": 4, "title": "Reconcile Latency Heatmap",
         "type": "heatmap", "gridPos": {"x": 8, "y": 14, "w": 8, "h": 5},
         "targets": [{
-          "expr": "sum(rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"regionalbucket\"}[2m])) by (le)",
+          "expr": "sum(rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"regionalwidgetrequest\"}[2m])) by (le)",
           "refId": "A", "format": "heatmap"
         }],
         "fieldConfig": { "defaults": { "unit": "s" } }
@@ -46,21 +46,21 @@
         "id": 5, "title": "Auth Flow & Connection Architecture",
         "type": "text", "gridPos": {"x": 0, "y": 19, "w": 8, "h": 6},
         "options": {
-          "content": "## Multi-Cluster Auth Flow\n\n```\nHub (kind-hub)                         Spoke (kind-us)\n─────────────────                      ────────────────\nKro RGD expands\n    ↓\nRegionalBucketRequest\n    ↓ (watched by controller)\nController.Reconcile()\n    │\n    ├─1. Read spec.region = \"us\"\n    │\n    ├─2. Provider.Get(ctx, \"us\")\n    │   └─ ClusterProfile/us lookup\n    │   └─ Kubeconfig Secret read\n    │   └─ rest.Config built\n    │   └─ spokeClient created\n    │\n    ├─3. ensureCOSU() ────────────────→ CephObjectStoreUser created\n    │\n    ├─4. ensureOBC()  ─────────────────→ ObjectBucketClaim created\n    │\n    └─5. updateStatus() ──────────────→ COSU.status.phase read\n                                           ↓\n                                    RBR.status.regions[] updated on hub\n\nAuth: Kubeconfig (X.509 client cert)\n      stored in Secret, referenced by ClusterProfile\n      No OIDC — service-to-service, not user-facing\n```",
+          "content": "## Multi-Cluster Auth Flow\n\n```\nHub (kind-hub)                         Spoke (kind-us)\n─────────────────                      ────────────────\nKro RGD expands\n    ↓\nRegionalWidgetRequest\n    ↓ (watched by controller)\nController.Reconcile()\n    │\n    ├─1. Read spec.region = \"us\"\n    │\n    ├─2. Provider.Get(ctx, \"us\")\n    │   └─ ClusterProfile/us lookup\n    │   └─ Kubeconfig Secret read\n    │   └─ rest.Config built\n    │   └─ spokeClient created\n    │\n    ├─3. ensureWidget() ──────────────→ Widget created on spoke\n    │\n    └─4. Widget operator reconciles\n                                           ↓\n                                    Widget.status updated on spoke\n\nAuth: Kubeconfig (X.509 client cert)\n      stored in Secret, referenced by ClusterProfile\n      No OIDC — service-to-service, not user-facing\n```",
           "mode": "markdown"
         }
       },
       {
         "id": 6, "title": "Work Queue Depth",
         "type": "gauge", "gridPos": {"x": 8, "y": 19, "w": 4, "h": 3},
-        "targets": [{ "expr": "controller_runtime_active_workers{controller=\"regionalbucket\"}", "refId": "A" }],
+        "targets": [{ "expr": "controller_runtime_active_workers{controller=\"regionalwidgetrequest\"}", "refId": "A" }],
         "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 10 }] } } }
       },
       {
         "id": 7, "title": "Success Rate (2m)",
         "type": "gauge", "gridPos": {"x": 12, "y": 19, "w": 4, "h": 3},
         "targets": [{
-          "expr": "sum(rate(controller_runtime_reconcile_total{controller=\"regionalbucket\",result=\"success\"}[2m])) / sum(rate(controller_runtime_reconcile_total{controller=\"regionalbucket\"}[2m]))",
+          "expr": "sum(rate(controller_runtime_reconcile_total{controller=\"regionalwidgetrequest\",result=\"success\"}[2m])) / sum(rate(controller_runtime_reconcile_total{controller=\"regionalwidgetrequest\"}[2m]))",
           "refId": "A"
         }],
         "fieldConfig": {
@@ -81,25 +81,6 @@
           "refId": "B", "legendFormat": "p50"
         }],
         "fieldConfig": { "defaults": { "unit": "s" } }
-      },
-      {
-        "id": 11, "title": "Spoke Resource Status",
-        "type": "table", "gridPos": {"x": 0, "y": 25, "w": 8, "h": 5},
-        "targets": [{
-          "expr": "count by (exported_namespace, name) (ceph_osd_up)",
-          "refId": "A", "format": "table", "legendFormat": "OSDs up"
-        }]
-      },
-      {
-        "id": 12, "title": "RGW Request Breakdown",
-        "type": "timeseries", "gridPos": {"x": 8, "y": 27, "w": 8, "h": 5},
-        "targets": [{
-          "expr": "rate(ceph_rgw_req[2m])",
-          "refId": "A", "legendFormat": "{{operation}}"
-        }, {
-          "expr": "rate(ceph_rgw_failed_req[2m])",
-          "refId": "B", "legendFormat": "failed"
-        }]
       }
     ],
     "schemaVersion": 39

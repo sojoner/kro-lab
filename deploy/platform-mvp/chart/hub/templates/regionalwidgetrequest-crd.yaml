@@ -1,14 +1,14 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: regionalbucketrequests.platform.example.com
+  name: regionalwidgetrequests.platform.example.com
 spec:
   group: platform.example.com
   names:
-    kind: RegionalBucketRequest
-    listKind: RegionalBucketRequestList
-    plural: regionalbucketrequests
-    singular: regionalbucketrequest
+    kind: RegionalWidgetRequest
+    listKind: RegionalWidgetRequestList
+    plural: regionalwidgetrequests
+    singular: regionalwidgetrequest
   scope: Namespaced
   versions:
     - name: v1alpha1
@@ -34,12 +34,9 @@ spec:
                 region:
                   type: string
                   enum: [us, eu, asia]
-                sizeGiB:
-                  type: integer
-                  default: 10
-                versioned:
-                  type: boolean
-                  default: false
+                message:
+                  type: string
+                  default: ""
             status:
               type: object
               properties:
@@ -54,12 +51,3 @@ spec:
                         type: string
                       endpoint:
                         type: string
-                      bucketName:
-                        type: string
-                      secretRef:
-                        type: object
-                        properties:
-                          name:
-                            type: string
-                          namespace:
-                            type: string

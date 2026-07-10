@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	widgetv1alpha1 "github.com/sojoner/kro-lab/platform-mvp/widget-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -16,30 +18,20 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 )
 
-var (
-	RegionalBucketRequestGVK = schema.GroupVersionKind{
-		Group:   "platform.example.com",
-		Version: "v1alpha1",
-		Kind:    "RegionalBucketRequest",
-	}
-	CephObjectStoreUserGVK = schema.GroupVersionKind{
-		Group:   "ceph.rook.io",
-		Version: "v1",
-		Kind:    "CephObjectStoreUser",
-	}
-	ObjectBucketClaimGVK = schema.GroupVersionKind{
-		Group:   "objectbucket.io",
-		Version: "v1alpha1",
-		Kind:    "ObjectBucketClaim",
-	}
-	rookNamespace  = "rook-ceph"
-	objectStoreRef = "my-store"
-)
+var RegionalWidgetRequestGVK = schema.GroupVersionKind{
+	Group:   "platform.example.com",
+	Version: "v1alpha1",
+	Kind:    "RegionalWidgetRequest",
+}
 
-// RegionalBucketReconciler watches RegionalBucketRequest on the hub only —
-// no cross-cluster fan-out needed here — and creates the corresponding Rook
-// objects on the target spoke, looked up via Manager.GetCluster.
-type RegionalBucketReconciler struct {
+// widgetNamespace is where both RegionalWidgetRequest (hub) and Widget
+// (spoke) live for this MVP — a single fixed namespace, not per-tenant.
+const widgetNamespace = "default"
+
+// RegionalWidgetReconciler watches RegionalWidgetRequest on the hub only —
+// no cross-cluster fan-out needed here — and creates the corresponding
+// Widget on the target spoke, looked up via Manager.GetCluster.
+type RegionalWidgetReconciler struct {
 	HubClient client.Client
 	Manager   mcmanager.Manager
 }
@@ -48,31 +40,31 @@ type RegionalBucketReconciler struct {
 // manager. Using the builder (rather than bare controller.New, as before)
 // also wires the Watch — a bare controller.New with no Watch never receives
 // any events.
-func SetupWithManager(mgr mcmanager.Manager, r *RegionalBucketReconciler) error {
+func SetupWithManager(mgr mcmanager.Manager, r *RegionalWidgetReconciler) error {
 	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(RegionalBucketRequestGVK)
+	obj.SetGroupVersionKind(RegionalWidgetRequestGVK)
 	return ctrl.NewControllerManagedBy(mgr.GetLocalManager()).
-		Named("regionalbucketrequest").
+		Named("regionalwidgetrequest").
 		For(obj).
 		Complete(r)
 }
 
-func (r *RegionalBucketReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+func (r *RegionalWidgetReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	logger := log.FromContext(ctx)
 
 	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(RegionalBucketRequestGVK)
+	obj.SetGroupVersionKind(RegionalWidgetRequestGVK)
 	err := r.HubClient.Get(ctx, req.NamespacedName, obj)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			return reconcile.Result{}, nil
 		}
-		return reconcile.Result{}, fmt.Errorf("getting regional bucket request: %w", err)
+		return reconcile.Result{}, fmt.Errorf("getting regional widget request: %w", err)
 	}
 
 	region, found, err := unstructured.NestedString(obj.Object, "spec", "region")
 	if err != nil || !found {
-		return reconcile.Result{}, fmt.Errorf("regional bucket request %s missing spec.region", req.Name)
+		return reconcile.Result{}, fmt.Errorf("regional widget request %s missing spec.region", req.Name)
 	}
 
 	spokeCluster, err := r.Manager.GetCluster(ctx, region)
@@ -86,66 +78,35 @@ func (r *RegionalBucketReconciler) Reconcile(ctx context.Context, req reconcile.
 
 	spokeClient := spokeCluster.GetClient()
 
-	if err := r.ensureCephObjectStoreUser(ctx, spokeClient, obj); err != nil {
-		return reconcile.Result{}, fmt.Errorf("ensuring CephObjectStoreUser: %w", err)
-	}
-
-	if err := r.ensureObjectBucketClaim(ctx, spokeClient, obj); err != nil {
-		return reconcile.Result{}, fmt.Errorf("ensuring ObjectBucketClaim: %w", err)
+	if err := r.ensureWidget(ctx, spokeClient, obj); err != nil {
+		return reconcile.Result{}, fmt.Errorf("ensuring Widget: %w", err)
 	}
 
 	return reconcile.Result{}, nil
 }
 
-func (r *RegionalBucketReconciler) ensureCephObjectStoreUser(ctx context.Context, spokeClient client.Client, obj *unstructured.Unstructured) error {
+func (r *RegionalWidgetReconciler) ensureWidget(ctx context.Context, spokeClient client.Client, obj *unstructured.Unstructured) error {
 	name := obj.GetName()
-	cosu := &unstructured.Unstructured{}
-	cosu.SetGroupVersionKind(CephObjectStoreUserGVK)
-	cosu.SetName(name)
-	cosu.SetNamespace(rookNamespace)
+	message, _, _ := unstructured.NestedString(obj.Object, "spec", "message")
 
-	err := spokeClient.Get(ctx, client.ObjectKeyFromObject(cosu), cosu)
+	widget := &widgetv1alpha1.Widget{}
+	err := spokeClient.Get(ctx, client.ObjectKey{Name: name, Namespace: widgetNamespace}, widget)
 	if err == nil {
 		return nil
 	}
 	if !errors.IsNotFound(err) {
-		return fmt.Errorf("getting CephObjectStoreUser %s: %w", name, err)
+		return fmt.Errorf("getting Widget %s: %w", name, err)
 	}
 
-	cosu.Object["spec"] = map[string]interface{}{
-		"store":       objectStoreRef,
-		"displayName": name,
+	widget = &widgetv1alpha1.Widget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: widgetNamespace,
+		},
+		Spec: widgetv1alpha1.WidgetSpec{Message: message},
 	}
-
-	if err := spokeClient.Create(ctx, cosu); err != nil {
-		return fmt.Errorf("creating CephObjectStoreUser %s: %w", name, err)
-	}
-	return nil
-}
-
-func (r *RegionalBucketReconciler) ensureObjectBucketClaim(ctx context.Context, spokeClient client.Client, obj *unstructured.Unstructured) error {
-	name := obj.GetName()
-	obc := &unstructured.Unstructured{}
-	obc.SetGroupVersionKind(ObjectBucketClaimGVK)
-	obc.SetName(name)
-	obc.SetNamespace(rookNamespace)
-
-	err := spokeClient.Get(ctx, client.ObjectKeyFromObject(obc), obc)
-	if err == nil {
-		return nil
-	}
-	if !errors.IsNotFound(err) {
-		return fmt.Errorf("getting ObjectBucketClaim %s: %w", name, err)
-	}
-
-	obc.Object["spec"] = map[string]interface{}{
-		"bucketName":       name,
-		"storageClassName": "rook-ceph-bucket",
-		"additionalConfig": map[string]interface{}{},
-	}
-
-	if err := spokeClient.Create(ctx, obc); err != nil {
-		return fmt.Errorf("creating ObjectBucketClaim %s: %w", name, err)
+	if err := spokeClient.Create(ctx, widget); err != nil {
+		return fmt.Errorf("creating Widget %s: %w", name, err)
 	}
 	return nil
 }

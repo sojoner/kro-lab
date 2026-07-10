@@ -1,71 +1,11 @@
-rook-ceph:
+widgetOperator:
   enabled: true
-  psp:
-    enableOBCs: true
-  enableDiscoveryDaemon: true
-  discoveryDaemonInterval: 60m
-
-rook-ceph-cluster:
-  enabled: true
-  operatorNamespace: rook-ceph
-  toolbox:
-    enabled: true
-    resources:
-      limits:
-        memory: 1Gi
-      requests:
-        cpu: 100m
-        memory: 128Mi
-  cephClusterSpec:
-    cephVersion:
-      image: quay.io/ceph/ceph:v19.2.0
-    dataDirHostPath: /var/lib/rook
-    mon:
-      count: 1
-      allowMultiplePerNode: false
-    mgr:
-      count: 1
-    storage:
-      useAllNodes: true
-      useAllDevices: true
-      deviceFilter: loop
-    healthCheck:
-      daemonHealth:
-        mon:
-          interval: 45s
-        osd:
-          interval: 60s
-    disruptionManagement:
-      managePodBudgets: false
-    resources:
-      osd:
-        requests:
-          cpu: 100m
-          memory: 512Mi
-        limits:
-          cpu: 500m
-          memory: 2Gi
-  cephObjectStores:
-    - name: my-store
-      spec:
-        metadataPool:
-          failureDomain: host
-          replicated:
-            size: 1
-            requireSafeReplicaSize: false
-          parameters:
-            pg_num: "8"
-        dataPool:
-          failureDomain: host
-          replicated:
-            size: 1
-            requireSafeReplicaSize: false
-          parameters:
-            pg_num: "8"
-        gateway:
-          port: 80
-          securePort: 443
-          instances: 1
-        preservePoolsOnDelete: false
-      storageClass:
-        enabled: false
+  replicas: 1
+  readyDelay: 2s
+  image:
+    repository: widget-operator
+    tag: local
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }

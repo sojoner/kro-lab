@@ -3,25 +3,15 @@ kind: Test
 metadata:
   name: binding-controller-creates-spoke-resources
 spec:
-  description: "Phase 5 — Verify binding controller creates Rook resources on us spoke"
+  description: "Phase 5 — Verify binding controller creates Widget on us spoke"
   steps:
   - try:
     - assert:
         resource:
-          apiVersion: ceph.rook.io/v1
-          kind: CephObjectStoreUser
+          apiVersion: platform.example.com/v1alpha1
+          kind: Widget
           metadata:
-            namespace: rook-ceph
-            name: e2e-test-bucket-us
-        timeout: 30s
-    cluster: us
-  - try:
-    - assert:
-        resource:
-          apiVersion: objectbucket.io/v1alpha1
-          kind: ObjectBucketClaim
-          metadata:
-            namespace: rook-ceph
-            name: e2e-test-bucket-us
+            namespace: default
+            name: e2e-test-widget-us
         timeout: 30s
     cluster: us

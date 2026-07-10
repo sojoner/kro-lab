@@ -15,7 +15,7 @@ Chainsaw execution feeding clean telemetry from within the cluster.
 4. Three Grafana dashboards deployed as ConfigMaps:
    - Cluster Fitness (hub + us side-by-side)
    - Chainsaw Test Results (pass/fail, duration, history)
-   - Controller + Rook Reconciliation (reconcile rate, errors, latency, Ceph health)
+   - Controller Deep Dive (reconcile rate, errors, latency)
 
 ## Acceptance Criteria
 
@@ -23,8 +23,7 @@ Chainsaw execution feeding clean telemetry from within the cluster.
 2. Grafana Deployment exists, `/api/health` returns 200
 3. Loki Deployment exists, `/ready` returns 200
 4. ServiceMonitor for binding-controller exists (scrapes :8080/metrics)
-5. ServiceMonitor for rook-ceph-mgr exists (Ceph metrics)
-6. Chainsaw CronJob exists in monitoring namespace, runs every 5m
-7. After one CronJob execution, Chainsaw results appear in Loki (queryable)
-8. Grafana dashboards load without error
-9. Chainsaw tests 07 + 08 pass from `tests/e2e/`
+5. Chainsaw CronJob exists in monitoring namespace, runs every 5m
+6. After one CronJob execution, Chainsaw results appear in Loki (queryable)
+7. Grafana dashboards load without error
+8. Chainsaw tests 07 + 08 pass from `tests/e2e/`

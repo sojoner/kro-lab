@@ -10,7 +10,7 @@ metadata:
   name: binding-controller
 rules:
   - apiGroups: ["platform.example.com"]
-    resources: ["regionalbucketrequests", "regionalbucketrequests/status"]
+    resources: ["regionalwidgetrequests", "regionalwidgetrequests/status"]
     verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["multicluster.x-k8s.io"]
     resources: ["clusterprofiles"]

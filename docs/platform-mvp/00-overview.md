@@ -1,4 +1,4 @@
-# Platform MVP: Kro + multicluster-runtime + Rook-Ceph on kind
+# Platform MVP: Kro + multicluster-runtime on kind
 
 ## Architecture
 
@@ -7,11 +7,11 @@
 │              hub cluster            │
 │  ┌──────────┐  ┌─────────────────┐  │
 │  │ Kro RGD  │  │ Binding Controller│ │
-│  │GlobalBucket│ │(multicluster-runtime)│
+│  │GlobalWidget│ │(multicluster-runtime)│
 │  └────┬─────┘  └────────┬────────┘  │
 │       │                 │           │
 │  ┌────▼─────────────────▼────────┐  │
-│  │     RegionalBucketRequest     │  │
+│  │   RegionalWidgetRequest       │  │
 │  └───────────────────────────────┘  │
 │  ┌────────────────────────────────┐ │
 │  │ ClusterProfile: us             │ │
@@ -21,15 +21,10 @@
                 ▼
 ┌─────────────────────────────────────┐
 │              us cluster             │
-│  ┌──────────┐  ┌─────────────────┐  │
-│  │  Rook    │  │  CephObjectStore│  │
-│  │ Operator │  │     (RGW)       │  │
-│  └────┬─────┘  └────────┬────────┘  │
-│       │                 │           │
-│  ┌────▼─────┐  ┌────────▼────────┐  │
-│  │ Ceph OSDs│  │ ObjectBucket    │  │
-│  │(loop dev)│  │    Claim        │  │
-│  └──────────┘  └─────────────────┘  │
+│  ┌──────────────────────────────┐   │
+│  │     widget-operator          │   │
+│  │  Widget CR + Deployment      │   │
+│  └──────────────────────────────┘   │
 └─────────────────────────────────────┘
 ```
 
@@ -37,25 +32,25 @@
 
 ```bash
 # Create clusters and infrastructure
-./hack/platform-mvp/create-clusters.sh
-./hack/platform-mvp/attach-loop-devices.sh
+make clusters
 
-# Install Rook + Kro + fleet registration
-# ... (see individual phase docs)
+# Deploy spoke and hub
+make deploy-us
+make deploy-hub
 
 # Run E2E verification
-./hack/platform-mvp/e2e.sh
+make validate
 
 # Teardown
-./hack/platform-mvp/destroy-clusters.sh
+make clean
 ```
 
 ## Phases
 
 1. [kind topology](01-kind-topology.md)
-2. [Rook/Ceph spoke](02-rook-ceph-spoke.md)
+2. [Widget operator](02-widget-operator.md)
 3. [Fleet registration](03-fleet-registration.md)
-4. [Kro GlobalBucket API](04-kro-globalbucket-api.md)
+4. [Kro GlobalWidget API](04-kro-globalwidget-api.md)
 5. [Binding controller](05-binding-controller.md)
 6. [E2E verification](06-e2e-verification.md)
 99. [Extending to EU/ASIA](99-extending-to-eu-asia.md)

@@ -8,12 +8,12 @@ rules:
   - apiGroups:
       - platform.example.com
     resources:
-      - globalbuckets
-      - globalbuckets/status
-      - globalbuckets/finalizers
-      - regionalbucketrequests
-      - regionalbucketrequests/status
-      - regionalbucketrequests/finalizers
+      - globalwidgets
+      - globalwidgets/status
+      - globalwidgets/finalizers
+      - regionalwidgetrequests
+      - regionalwidgetrequests/status
+      - regionalwidgetrequests/finalizers
     verbs:
       - create
       - delete

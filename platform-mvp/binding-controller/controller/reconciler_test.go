@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	widgetv1alpha1 "github.com/sojoner/kro-lab/platform-mvp/widget-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -13,24 +14,25 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-func TestReconciler_CreatesSpokeResources(t *testing.T) {
+func TestReconciler_CreatesSpokeWidget(t *testing.T) {
 	scheme := runtime.NewScheme()
 	corev1.AddToScheme(scheme)
+	widgetv1alpha1.AddToScheme(scheme)
 
 	hubClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	spokeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	spokeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&widgetv1alpha1.Widget{}).Build()
 
 	mgr := &fakeMCManager{
 		spoke: map[string]cluster.Cluster{"us": &fakeSpokeCluster{c: spokeClient}},
 		hub:   hubClient,
 	}
 
-	r := &RegionalBucketReconciler{
+	r := &RegionalWidgetReconciler{
 		HubClient: hubClient,
 		Manager:   mgr,
 	}
 
-	obj := newRegionalBucketRequest("test-bucket-us", "us", 10, false)
+	obj := newRegionalWidgetRequest("test-widget-us", "us", "hello")
 	err := hubClient.Create(context.Background(), obj)
 	if err != nil {
 		t.Fatalf("failed to create test object: %v", err)
@@ -44,30 +46,23 @@ func TestReconciler_CreatesSpokeResources(t *testing.T) {
 		t.Fatalf("unexpected reconcile error: %v", err)
 	}
 
-	cosu := &unstructured.Unstructured{}
-	cosu.SetGroupVersionKind(CephObjectStoreUserGVK)
+	widget := &widgetv1alpha1.Widget{}
 	err = spokeClient.Get(context.Background(), client.ObjectKey{
-		Name:      "test-bucket-us",
-		Namespace: "rook-ceph",
-	}, cosu)
+		Name:      "test-widget-us",
+		Namespace: widgetNamespace,
+	}, widget)
 	if err != nil {
-		t.Fatalf("expected CephObjectStoreUser to exist: %v", err)
+		t.Fatalf("expected Widget to exist: %v", err)
 	}
-
-	obc := &unstructured.Unstructured{}
-	obc.SetGroupVersionKind(ObjectBucketClaimGVK)
-	err = spokeClient.Get(context.Background(), client.ObjectKey{
-		Name:      "test-bucket-us",
-		Namespace: "rook-ceph",
-	}, obc)
-	if err != nil {
-		t.Fatalf("expected ObjectBucketClaim to exist: %v", err)
+	if widget.Spec.Message != "hello" {
+		t.Errorf("expected widget message %q, got %q", "hello", widget.Spec.Message)
 	}
 }
 
 func TestReconciler_UnknownRegionReturnsError(t *testing.T) {
 	scheme := runtime.NewScheme()
 	corev1.AddToScheme(scheme)
+	widgetv1alpha1.AddToScheme(scheme)
 
 	hubClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	mgr := &fakeMCManager{
@@ -75,12 +70,12 @@ func TestReconciler_UnknownRegionReturnsError(t *testing.T) {
 		hub:   hubClient,
 	}
 
-	r := &RegionalBucketReconciler{
+	r := &RegionalWidgetReconciler{
 		HubClient: hubClient,
 		Manager:   mgr,
 	}
 
-	obj := newRegionalBucketRequest("test-bucket-unknown", "unknown", 10, false)
+	obj := newRegionalWidgetRequest("test-widget-unknown", "unknown", "hello")
 	err := hubClient.Create(context.Background(), obj)
 	if err != nil {
 		t.Fatalf("failed to create test object: %v", err)
@@ -95,15 +90,14 @@ func TestReconciler_UnknownRegionReturnsError(t *testing.T) {
 	}
 }
 
-func newRegionalBucketRequest(name, region string, sizeGiB int, versioned bool) *unstructured.Unstructured {
+func newRegionalWidgetRequest(name, region, message string) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(RegionalBucketRequestGVK)
+	obj.SetGroupVersionKind(RegionalWidgetRequestGVK)
 	obj.SetName(name)
-	obj.SetNamespace("default")
+	obj.SetNamespace(widgetNamespace)
 	obj.Object["spec"] = map[string]interface{}{
-		"region":    region,
-		"sizeGiB":   int64(sizeGiB),
-		"versioned": versioned,
+		"region":  region,
+		"message": message,
 	}
 	return obj
 }

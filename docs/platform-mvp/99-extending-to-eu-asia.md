@@ -8,7 +8,7 @@ The architecture is designed for multi-region from day one:
 
 - **Kro RGD**: `spec.regions` is `[]string` — adding `eu` or `asia` requires zero RGD changes
 - **Binding controller**: uses `mgr.GetCluster(ctx, ClusterName(region))` generically — any registered ClusterProfile is automatically discovered
-- **RegionalBucketRequest**: schema supports arbitrary region names
+- **RegionalWidgetRequest**: schema supports arbitrary region names
 
 ## What's needed per new region
 
@@ -20,10 +20,9 @@ kind create cluster --name eu --config deploy/platform-mvp/kind/kind-eu.yaml
 kind get kubeconfig --name eu --internal > hack/platform-mvp/kubeconfig-eu-internal
 ```
 
-### Phase 2 — Rook/Ceph in new cluster
+### Phase 2 — Widget operator in new cluster
 ```bash
-./hack/platform-mvp/attach-loop-devices.sh  # adapted for eu workers
-# Install Rook operator, apply CephCluster + CephObjectStore on eu
+# Deploy widget-operator on eu
 ```
 
 ### Phase 3 — New ClusterProfile
@@ -39,6 +38,3 @@ spec:
 
 ### Phase 4-5 — No changes needed
 Kro RGD and binding controller already handle arbitrary regions.
-
-## Resource commitment
-3 concurrent Ceph clusters require significant resources (network + CPU + memory). This MVP validates the pattern with one spoke first. Scale to 3+ regions on bigger hardware (64GB+ RAM, 8+ cores).

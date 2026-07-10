@@ -24,9 +24,6 @@ GRAFANA_URL        ?= http://$(INGRESS_HOST)
 GRAFANA_PF_PORT    ?= 3000
 OBS_NS             ?= monitoring
 
-LOOP_SIZE          ?= 10G
-LOOP_FILE          ?= /var/lib/rook-loopfile
-
 BC_KUBECONFIG      ?= $(HOME)/.kube/config
 BC_INTERNAL_KC     ?= hack/platform-mvp/kubeconfig-us-internal
 
@@ -40,6 +37,8 @@ OUT_DIR            ?= bin
 BC_BIN             ?= $(OUT_DIR)/binding-controller
 BC_IMAGE           ?= binding-controller:local
 BC_DIR             ?= platform-mvp/binding-controller
+WO_IMAGE           ?= widget-operator:local
+WO_DIR             ?= platform-mvp/widget-operator
 
 FLUX_DIR           ?= deploy/platform-mvp/flux
 
@@ -56,15 +55,16 @@ help:
 	@echo "Deploy:"
 	@echo "  make deploy      Full deployment (clusters + us + hub)"
 	@echo "  make clusters    Create kind clusters"
-	@echo "  make deploy-us   Rook/Ceph on us spoke"
+	@echo "  make deploy-us   widget-operator on us spoke"
 	@echo "  make deploy-hub  LGTM + ingress + fleet + Kro on hub"
 	@echo "  make deploy-flux Install Flux controllers + bootstrap"
 	@echo "  make binding-controller-image  Build + load binding-controller image"
+	@echo "  make widget-operator-image     Build + load widget-operator image"
 	@echo "  make chainsaw-runner  Build + load chainsaw-runner image"
 	@echo ""
 	@echo "Validate:"
 	@echo "  make validate    Run full Chainsaw E2E suite"
-	@echo "  make validate-p1-p6  Run platform tests (p1-p6)"
+	@echo "  make validate-p1-p6  Run platform tests (p1-p5)"
 	@echo "  make validate-p7-p9  Run observability tests (p7-p9)"
 	@echo ""
 	@echo "Grafana:"
@@ -76,7 +76,7 @@ help:
 
 # ── Test ─────────────────────────────────────────────────────────────────────
 .PHONY: test test-root test-bc test-race test-cover
-test: test-root test-bc
+test: test-root test-bc test-wo
 	@echo "==> All unit tests passed"
 
 test-root:
@@ -85,14 +85,19 @@ test-root:
 test-bc:
 	cd platform-mvp/binding-controller && go test ./... -count=1
 
+test-wo:
+	cd platform-mvp/widget-operator && go test ./... -count=1
+
 test-race:
 	go test -race ./... -count=1
 	cd platform-mvp/binding-controller && go test -race ./... -count=1
+	cd platform-mvp/widget-operator && go test -race ./... -count=1
 
 test-cover:
 	go test -coverprofile=coverage-root.out ./...
 	cd platform-mvp/binding-controller && go test -coverprofile=../../coverage-bc.out ./...
-	@echo "Coverage: coverage-root.out coverage-bc.out"
+	cd platform-mvp/widget-operator && go test -coverprofile=../../coverage-wo.out ./...
+	@echo "Coverage: coverage-root.out coverage-bc.out coverage-wo.out"
 
 # ── Lint ─────────────────────────────────────────────────────────────────────
 .PHONY: lint lint-fix tdd-lint
@@ -100,6 +105,7 @@ lint:
 	@echo "==> go vet + gofmt check"
 	go vet ./...
 	cd platform-mvp/binding-controller && go vet ./...
+	cd platform-mvp/widget-operator && go vet ./...
 	@if [ -n "$$(gofmt -l .)" ]; then \
 		echo "ERROR: files not formatted:"; \
 		gofmt -l .; \
@@ -109,8 +115,10 @@ lint:
 lint-fix:
 	gofmt -w .
 	cd platform-mvp/binding-controller && gofmt -w .
+	cd platform-mvp/widget-operator && gofmt -w .
 	go vet ./...
 	cd platform-mvp/binding-controller && go vet ./...
+	cd platform-mvp/widget-operator && go vet ./...
 
 tdd-lint: lint
 
@@ -123,7 +131,7 @@ build-bc:
 	cd platform-mvp/binding-controller && go build -o ../../$(BC_BIN) .
 
 # ── Deploy ───────────────────────────────────────────────────────────────────
-.PHONY: deploy clusters deploy-us deploy-hub deploy-flux binding-controller-image
+.PHONY: deploy clusters deploy-us deploy-hub deploy-flux binding-controller-image widget-operator-image
 deploy: clusters deploy-us deploy-hub
 	@echo "==> Deployment complete"
 
@@ -131,11 +139,11 @@ clusters:
 	@echo "==> Creating kind clusters (parallel)"
 	@if ! kind get clusters 2>/dev/null | grep -qx "$(KIND_HUB)"; then \
 		kind create cluster --name $(KIND_HUB) --config $(KIND_HUB_CONFIG) & \
-	fi
-	@if ! kind get clusters 2>/dev/null | grep -qx "$(KIND_US)"; then \
+	fi; \
+	if ! kind get clusters 2>/dev/null | grep -qx "$(KIND_US)"; then \
 		kind create cluster --name $(KIND_US) --config $(KIND_US_CONFIG) & \
-	fi
-	@wait
+	fi; \
+	wait
 	@echo "  Verifying nodes..."
 	kubectl --context kind-$(KIND_HUB) get nodes
 	kubectl --context kind-$(KIND_US) get nodes
@@ -145,28 +153,21 @@ clusters:
 	docker exec kind-$(KIND_US)-control-plane ping -c1 "$$HUB_IP" 2>/dev/null && echo "  Cross-cluster reachability OK"
 	@echo "==> Clusters ready"
 
-deploy-us:
-	@echo "==> Attaching loop devices to us workers"
-	@WORKERS=$$(docker ps --filter "name=$(KIND_US)-worker" --format '{{.Names}}'); \
-	for node in $$WORKERS; do \
-		docker exec "$$node" truncate -s $(LOOP_SIZE) $(LOOP_FILE); \
-		docker exec "$$node" losetup -f $(LOOP_FILE) 2>/dev/null || true; \
-	done
-	@echo "==> Deploying Rook operator"
-	helm dependency update $(US_CHART) > /dev/null
-	kubectl --context kind-$(KIND_US) create namespace rook-ceph --dry-run=client -o yaml | kubectl apply -f -
-	helm upgrade --install rook-operator $(US_CHART) \
-		-n rook-ceph --create-namespace --wait --timeout $(HELM_TIMEOUT) \
-		--set rook-ceph-cluster.enabled=false \
+widget-operator-image:
+	@echo "==> Building widget-operator image"
+	docker build -f $(WO_DIR)/Dockerfile -t $(WO_IMAGE) .
+	kind load docker-image $(WO_IMAGE) --name $(KIND_US)
+
+deploy-us: widget-operator-image
+	@echo "==> Deploying widget-operator on us"
+	kubectl --context kind-$(KIND_US) create namespace default --dry-run=client -o yaml | kubectl apply -f -
+	helm upgrade --install us $(US_CHART) \
+		-n default --create-namespace --wait --timeout $(HELM_TIMEOUT) \
 		--kube-context kind-$(KIND_US)
-	@echo "  Waiting for Rook CRDs..."
-	kubectl --context kind-$(KIND_US) wait --for=condition=Established crd/cephclusters.ceph.rook.io --timeout=60s
-	@echo "==> Deploying CephCluster + ObjectStore"
-	helm upgrade --install rook-cluster $(US_CHART) \
-		-n rook-ceph --wait --timeout $(HELM_TIMEOUT) \
-		--set rook-ceph.enabled=false \
-		--kube-context kind-$(KIND_US)
-	@echo "==> Rook/Ceph deployed"
+	@echo "  Restarting widget-operator (picks up freshly-loaded image under its fixed :local tag)"
+	kubectl --context kind-$(KIND_US) -n default rollout restart deployment/widget-operator
+	kubectl --context kind-$(KIND_US) -n default rollout status deployment/widget-operator --timeout=60s
+	@echo "==> Widget operator deployed"
 
 binding-controller-image:
 	@echo "==> Building binding-controller image"
@@ -196,6 +197,9 @@ deploy-hub: binding-controller-image
 	kubectl --context kind-$(KIND_HUB) create secret generic us-kubeconfig \
 		--from-file=value=$(BC_INTERNAL_KC) \
 		--dry-run=client -o yaml | kubectl --context kind-$(KIND_HUB) apply -f -
+	@echo "  Restarting binding-controller (picks up freshly-loaded image under its fixed :local tag, and the refreshed us-kubeconfig secret)"
+	kubectl --context kind-$(KIND_HUB) -n default rollout restart deployment/binding-controller
+	kubectl --context kind-$(KIND_HUB) -n default rollout status deployment/binding-controller --timeout=60s
 	@echo "==> Hub deployed ($(GRAFANA_URL))"
 
 deploy-flux:
@@ -231,7 +235,7 @@ validate:
 
 validate-p1-p6:
 	chainsaw test $(CHAINSAW_DIR) --test-dir $(CHAINSAW_DIR)/tests \
-		--selector 'test=01-hub-cluster-ready,test=02-us-cluster-ready,test=03-rook-ceph-healthy,test=04-fleet-registration,test=05-kro-globalbucket,test=06-binding-controller'
+		--selector 'test=01-hub-cluster-ready,test=02-us-cluster-ready,test=04-fleet-registration,test=05-kro-globalwidget,test=06-binding-controller'
 
 validate-p7-p9:
 	chainsaw test $(CHAINSAW_DIR) --test-dir $(CHAINSAW_DIR)/tests \
@@ -249,7 +253,6 @@ grafana-url:
 	@echo ""
 	@echo "  $(GRAFANA_URL)/d/cluster-fitness       Cluster Fitness"
 	@echo "  $(GRAFANA_URL)/d/chainsaw-results       Chainsaw Test Results"
-	@echo "  $(GRAFANA_URL)/d/controller-rook-recon  Controller + Rook Reconciliation"
 	@echo "  $(GRAFANA_URL)/d/controller-deep-dive   Controller Deep Dive"
 
 # ── Clean ────────────────────────────────────────────────────────────────────
@@ -261,7 +264,7 @@ clean:
 	rm -f $(CHAINSAW_DIR)/kubeconfig-hub $(CHAINSAW_DIR)/kubeconfig-us-internal $(CHAINSAW_REPORT)
 
 clean-artifacts:
-	rm -rf $(OUT_DIR) coverage-root.out coverage-bc.out
+	rm -rf $(OUT_DIR) coverage-root.out coverage-bc.out coverage-wo.out
 
 # ── Full loop ────────────────────────────────────────────────────────────────
 .PHONY: all

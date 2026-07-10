@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sojoner/kro-lab/platform-mvp/binding-controller/controller"
+	widgetv1alpha1 "github.com/sojoner/kro-lab/platform-mvp/widget-operator/api/v1alpha1"
 	provider "github.com/sojoner/kro-lab/providers/cluster-inventory-api"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -44,6 +45,10 @@ func main() {
 
 	scheme := runtime.NewScheme()
 	corev1.AddToScheme(scheme)
+	if err := widgetv1alpha1.AddToScheme(scheme); err != nil {
+		ctrl.Log.Error(err, "failed to add widget scheme")
+		os.Exit(1)
+	}
 
 	hubKubeconfig := flag.String("hub-kubeconfig", "", "Path to hub cluster kubeconfig")
 	spokeKubeconfig := flag.String("spoke-kubeconfig", "", "Path to spoke cluster kubeconfig (static fallback)")
@@ -81,12 +86,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	regionalBucketReconciler := &controller.RegionalBucketReconciler{
+	regionalWidgetReconciler := &controller.RegionalWidgetReconciler{
 		HubClient: mgr.GetLocalManager().GetClient(),
 		Manager:   mgr,
 	}
-	if err := controller.SetupWithManager(mgr, regionalBucketReconciler); err != nil {
-		log.Error(err, "failed to setup regionalbucketrequest controller")
+	if err := controller.SetupWithManager(mgr, regionalWidgetReconciler); err != nil {
+		log.Error(err, "failed to setup regionalwidgetrequest controller")
 		os.Exit(1)
 	}
 

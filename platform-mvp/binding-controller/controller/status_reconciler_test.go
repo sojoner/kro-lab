@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	widgetv1alpha1 "github.com/sojoner/kro-lab/platform-mvp/widget-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -56,50 +58,35 @@ func (f *fakeMCManager) GetLocalManager() manager.Manager {
 	return &fakeLocalManager{c: f.hub}
 }
 
-func newObjectBucketClaim(name, namespace, phase, objectBucketName string) *unstructured.Unstructured {
-	obc := &unstructured.Unstructured{}
-	obc.SetGroupVersionKind(ObjectBucketClaimGVK)
-	obc.SetName(name)
-	obc.SetNamespace(namespace)
-	obc.Object["spec"] = map[string]interface{}{
-		"objectBucketName": objectBucketName,
-	}
-	obc.Object["status"] = map[string]interface{}{
-		"phase": phase,
-	}
-	return obc
-}
-
-func newObjectBucket(name, bucketHost string, bucketPort int64, bucketName string) *unstructured.Unstructured {
-	ob := &unstructured.Unstructured{}
-	ob.SetGroupVersionKind(ObjectBucketGVK)
-	ob.SetName(name)
-	ob.Object["spec"] = map[string]interface{}{
-		"connection": map[string]interface{}{
-			"endpoint": map[string]interface{}{
-				"bucketHost": bucketHost,
-				"bucketPort": bucketPort,
-				"bucketName": bucketName,
-			},
+func newWidget(name, namespace string, phase widgetv1alpha1.WidgetPhase, endpoint string) *widgetv1alpha1.Widget {
+	return &widgetv1alpha1.Widget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Status: widgetv1alpha1.WidgetStatus{
+			Phase:    phase,
+			Endpoint: endpoint,
 		},
 	}
-	return ob
 }
 
-func TestStatusReconciler_PropagatesFullConnectionInfo(t *testing.T) {
+func TestStatusReconciler_PropagatesWidgetStatus(t *testing.T) {
 	scheme := runtime.NewScheme()
 	corev1.AddToScheme(scheme)
+	widgetv1alpha1.AddToScheme(scheme)
 
-	obc := newObjectBucketClaim("test-bucket-us", rookNamespace, "Bound", "obc-test-bucket-us")
-	ob := newObjectBucket("obc-test-bucket-us", "rook-ceph-rgw-my-store.rook-ceph.svc", 80, "test-bucket-us")
-	credsSecret := &corev1.Secret{}
-	credsSecret.SetName("test-bucket-us")
-	credsSecret.SetNamespace(rookNamespace)
+	widget := newWidget("test-widget-us", widgetNamespace, widgetv1alpha1.WidgetPhaseReady, "widget://default/test-widget-us")
+	spokeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(widget).Build()
 
-	spokeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(obc, ob, credsSecret).Build()
-
-	hubObj := newRegionalBucketRequest("test-bucket-us", "us", 10, false)
-	hubClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(hubObj).Build()
+	hubObj := newRegionalWidgetRequest("test-widget-us", "us", "hello")
+	// RegionalWidgetRequest has the status subresource enabled in its CRD, so
+	// the fake client must model that too — otherwise a plain Update() (which
+	// the real API server would silently ignore for .status) would appear to
+	// work in this test but fail against a real cluster.
+	statusSubresource := &unstructured.Unstructured{}
+	statusSubresource.SetGroupVersionKind(RegionalWidgetRequestGVK)
+	hubClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(hubObj).WithStatusSubresource(statusSubresource).Build()
 
 	mgr := &fakeMCManager{
 		spoke: map[string]cluster.Cluster{"us": &fakeSpokeCluster{c: spokeClient}},
@@ -110,7 +97,7 @@ func TestStatusReconciler_PropagatesFullConnectionInfo(t *testing.T) {
 
 	req := mcreconcile.Request{
 		Request: reconcile.Request{
-			NamespacedName: client.ObjectKey{Name: "test-bucket-us", Namespace: rookNamespace},
+			NamespacedName: client.ObjectKey{Name: "test-widget-us", Namespace: widgetNamespace},
 		},
 		ClusterName: "us",
 	}
@@ -120,9 +107,9 @@ func TestStatusReconciler_PropagatesFullConnectionInfo(t *testing.T) {
 	}
 
 	updated := &unstructured.Unstructured{}
-	updated.SetGroupVersionKind(RegionalBucketRequestGVK)
-	if err := hubClient.Get(context.Background(), client.ObjectKey{Name: "test-bucket-us", Namespace: hubObj.GetNamespace()}, updated); err != nil {
-		t.Fatalf("failed to get updated RegionalBucketRequest: %v", err)
+	updated.SetGroupVersionKind(RegionalWidgetRequestGVK)
+	if err := hubClient.Get(context.Background(), client.ObjectKey{Name: "test-widget-us", Namespace: hubObj.GetNamespace()}, updated); err != nil {
+		t.Fatalf("failed to get updated RegionalWidgetRequest: %v", err)
 	}
 
 	regions, found, err := unstructured.NestedSlice(updated.Object, "status", "regions")
@@ -135,20 +122,13 @@ func TestStatusReconciler_PropagatesFullConnectionInfo(t *testing.T) {
 		t.Fatalf("expected status.regions[0] to be a map, got %T", regions[0])
 	}
 
+	phase, _ := region["phase"].(string)
 	endpoint, _ := region["endpoint"].(string)
-	bucketName, _ := region["bucketName"].(string)
-	secretRef, _ := region["secretRef"].(map[string]interface{})
 
+	if phase != string(widgetv1alpha1.WidgetPhaseReady) {
+		t.Errorf("expected phase Ready, got %q", phase)
+	}
 	if endpoint == "" {
 		t.Error("expected non-empty endpoint")
-	}
-	if bucketName == "" {
-		t.Error("expected non-empty bucketName")
-	}
-	if secretRef == nil {
-		t.Fatal("expected non-nil secretRef")
-	}
-	if secretRef["name"] != "test-bucket-us" || secretRef["namespace"] != rookNamespace {
-		t.Errorf("expected secretRef {name: test-bucket-us, namespace: %s}, got %v", rookNamespace, secretRef)
 	}
 }
