@@ -17,11 +17,7 @@ spec:
             up \
             token_rotator_last_rotation_timestamp_seconds; do
             ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${query}',safe=''))" 2>/dev/null || echo "${query}")
-            COUNT=$(curl -s "http://localhost:19090/api/v1/query?query=${ENCODED}" 2>/dev/null | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-print(len(d.get('data',{}).get('result',[])))
-" 2>/dev/null || echo "0")
+            COUNT=$(curl -s "http://localhost:19090/api/v1/query?query=${ENCODED}" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('data',{}).get('result',[])))" 2>/dev/null || echo "0")
             if [ "$COUNT" -gt 0 ]; then
               echo "PASS: $query → $COUNT result(s)"
             else
@@ -59,11 +55,7 @@ print(len(d.get('data',{}).get('result',[])))
             count\(kube_node_status_condition\{condition\=\"Ready\"\,status\=\"true\"\}\) \
             kube_pod_status_phase\{phase\!\=\"Running\"\,phase\!\=\"Succeeded\"\}; do
             ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${query}',safe=''))" 2>/dev/null || echo "${query}")
-            RESULT=$(curl -s "http://localhost:19091/api/v1/query?query=${ENCODED}" 2>/dev/null | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-print(len(d.get('data',{}).get('result',[])))
-" 2>/dev/null || echo "0")
+            RESULT=$(curl -s "http://localhost:19091/api/v1/query?query=${ENCODED}" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('data',{}).get('result',[])))" 2>/dev/null || echo "0")
             if [ "$RESULT" -gt 0 ]; then
               echo "PASS: $query → $RESULT result(s)"
             else
