@@ -16,6 +16,7 @@ spec:
       interval: 1m
   values:
     ingress:
+      enabled: true
       host: ${ingress_host}
     promtail:
       enabled: false
