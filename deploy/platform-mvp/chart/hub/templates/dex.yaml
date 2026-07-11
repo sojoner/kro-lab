@@ -40,6 +40,20 @@ data:
         public: true
         redirectURIs:
           - http://localhost:18000/callback
+{{- range .Values.dex.infrastructureClients }}
+      - id: {{ .id }}
+        name: {{ .name }}
+        secret: {{ .secret }}
+        grantTypes:
+          - client_credentials
+{{- end }}
+{{- range .Values.dex.tenantClients }}
+      - id: {{ .id }}
+        name: {{ .name }}
+        secret: {{ .secret }}
+        grantTypes:
+          - client_credentials
+{{- end }}
     connectors:
       - type: mockPassword
         id: mock
@@ -47,6 +61,13 @@ data:
         config:
           username: "admin@example.com"
           password: "admin"
+{{- range .Values.dex.connectors }}
+      - type: {{ .type }}
+        id: {{ .id }}
+        name: {{ .name }}
+        config:
+          {{- toYaml .config | nindent 10 }}
+{{- end }}
     enablePasswordDB: false
 ---
 apiVersion: v1

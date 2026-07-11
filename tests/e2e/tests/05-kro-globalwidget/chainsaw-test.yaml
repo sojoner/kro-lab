@@ -5,18 +5,15 @@ metadata:
 spec:
   description: "Phase 4 — Verify Kro GlobalWidget RGD creates RegionalWidgetRequest"
   steps:
-  # The GlobalWidget RGD is already installed on hub via the real chart/hub
-  # Helm release (kept in sync by Flux) — this test exercises that live
-  # deployment rather than re-applying its own copy of the manifest.
   - try:
-    - assert:
-        resource:
-          apiVersion: kro.run/v1alpha1
-          kind: ResourceGraphDefinition
-          metadata:
-            name: globalwidget.platform.example.com
-          status:
-            state: Active
+    - script:
+        content: |
+          STATE=$(kubectl get resourcegraphdefinition globalwidget.platform.example.com -o jsonpath='{.status.state}' 2>/dev/null || echo "")
+          if [ "$STATE" != "Active" ]; then
+            echo "FAIL: RGD state is '$STATE', expected 'Active'"
+            exit 1
+          fi
+          echo "PASS: RGD globalwidget.platform.example.com state=$STATE"
         timeout: 30s
     cluster: hub
   - try:
@@ -31,10 +28,6 @@ spec:
             regions: [us]
             message: "hello from e2e"
     cluster: hub
-    # binding-controller asynchronously creates a Widget on us for this
-    # RegionalWidgetRequest too; clean it up since it has no cross-cluster
-    # deletion handling of its own (see 06-binding-controller for why this
-    # matters for repeated test runs).
     finally:
     - delete:
         ref:

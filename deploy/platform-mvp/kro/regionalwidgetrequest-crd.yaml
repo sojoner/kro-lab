@@ -37,6 +37,12 @@ spec:
                 message:
                   type: string
                   default: ""
+                tenant:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                      description: "Tenant identifier used as spoke-side namespace for workload isolation"
             status:
               type: object
               properties:

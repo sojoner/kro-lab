@@ -15,14 +15,8 @@ spec:
         timeout: 30s
     cluster: us
   - try:
-    - assert:
-        resource:
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: widget-operator
-            namespace: default
-          status:
-            readyReplicas: 1
-        timeout: 60s
+    - script:
+        content: |
+          kubectl rollout status deployment/widget-operator -n default --timeout=60s
+        timeout: 90s
     cluster: us

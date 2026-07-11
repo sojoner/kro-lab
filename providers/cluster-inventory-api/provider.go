@@ -2,6 +2,8 @@ package clusterinventoryapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -48,27 +50,32 @@ type indexRegistration struct {
 
 // Provider discovers spoke clusters from ClusterProfile objects on the hub
 // and engages the multicluster-runtime manager with a real cluster.Cluster
-// for each one it finds.
+// for each one it finds. It tracks kubeconfig SHA256 hashes and re-engages
+// clusters when the kubeconfig Secret changes, enabling credential rotation.
 type Provider struct {
 	scheme       *runtime.Scheme
 	hubClient    client.Client
 	pollInterval time.Duration
 	newCluster   func(cfg *rest.Config, scheme *runtime.Scheme) (cluster.Cluster, error)
 
-	mu       sync.RWMutex
-	clusters map[string]cluster.Cluster
-	indexes  []indexRegistration
+	mu               sync.RWMutex
+	clusters         map[string]cluster.Cluster
+	cancelFns        map[string]context.CancelFunc
+	kubeconfigHashes map[string]string
+	indexes          []indexRegistration
 }
 
 // New creates a Provider that polls ClusterProfile objects on the hub every
 // pollInterval to discover spoke clusters.
 func New(scheme *runtime.Scheme, hubClient client.Client, pollInterval time.Duration) *Provider {
 	return &Provider{
-		scheme:       scheme,
-		hubClient:    hubClient,
-		pollInterval: pollInterval,
-		newCluster:   newRealCluster,
-		clusters:     map[string]cluster.Cluster{},
+		scheme:           scheme,
+		hubClient:        hubClient,
+		pollInterval:     pollInterval,
+		newCluster:       newRealCluster,
+		clusters:         map[string]cluster.Cluster{},
+		cancelFns:        map[string]context.CancelFunc{},
+		kubeconfigHashes: map[string]string{},
 	}
 }
 
@@ -133,14 +140,45 @@ func (p *Provider) discover(ctx context.Context, mgr mcmanager.Manager) {
 		return
 	}
 
+	// Track which ClusterProfiles exist in this discovery cycle so we can
+	// detect deletions (clusters that were engaged but no longer have a
+	// corresponding ClusterProfile).
+	seen := make(map[string]bool, len(cps.Items))
+
 	for _, cp := range cps.Items {
 		name := cp.GetName()
+		seen[name] = true
+
+		secretName := name + KubeconfigSecretSuffix
+		secretNamespace := cp.GetNamespace()
+
+		secret := &corev1.Secret{}
+		if err := p.hubClient.Get(ctx, types.NamespacedName{
+			Name:      secretName,
+			Namespace: secretNamespace,
+		}, secret); err != nil {
+			continue
+		}
+
+		kubeconfigBytes, ok := secret.Data["value"]
+		if !ok {
+			continue
+		}
+
+		currentHash := hashBytes(kubeconfigBytes)
 
 		p.mu.RLock()
 		_, engaged := p.clusters[name]
+		prevHash := p.kubeconfigHashes[name]
 		p.mu.RUnlock()
-		if engaged {
+
+		if engaged && currentHash == prevHash {
 			continue
+		}
+
+		// Disengage the old cluster if kubeconfig changed.
+		if engaged {
+			p.disengageCluster(name)
 		}
 
 		cl, err := p.clusterFromClusterProfile(ctx, &cp)
@@ -148,10 +186,13 @@ func (p *Provider) discover(ctx context.Context, mgr mcmanager.Manager) {
 			continue
 		}
 
-		go func() { _ = cl.Start(ctx) }()
+		clusterCtx, cancel := context.WithCancel(ctx)
+		go func() { _ = cl.Start(clusterCtx) }()
 
 		p.mu.Lock()
 		p.clusters[name] = cl
+		p.cancelFns[name] = cancel
+		p.kubeconfigHashes[name] = currentHash
 		indexes := make([]indexRegistration, len(p.indexes))
 		copy(indexes, p.indexes)
 		p.mu.Unlock()
@@ -161,11 +202,53 @@ func (p *Provider) discover(ctx context.Context, mgr mcmanager.Manager) {
 		}
 
 		if err := mgr.Engage(ctx, name, cl); err != nil {
-			p.mu.Lock()
-			delete(p.clusters, name)
-			p.mu.Unlock()
+			p.disengageCluster(name)
 		}
 	}
+
+	// Remove clusters whose ClusterProfile has been deleted.
+	p.mu.RLock()
+	engagedNames := make([]string, 0, len(p.clusters))
+	for name := range p.clusters {
+		engagedNames = append(engagedNames, name)
+	}
+	p.mu.RUnlock()
+
+	for _, name := range engagedNames {
+		if !seen[name] {
+			p.disengageCluster(name)
+		}
+	}
+}
+
+// disengageCluster cancels the cluster's context and removes it from the
+// provider's tracking maps. Safe to call multiple times for the same cluster.
+func (p *Provider) disengageCluster(name string) {
+	p.mu.Lock()
+	cl, ok := p.clusters[name]
+	if !ok {
+		p.mu.Unlock()
+		return
+	}
+	delete(p.clusters, name)
+	delete(p.kubeconfigHashes, name)
+	if cancel, exists := p.cancelFns[name]; exists {
+		cancel()
+		delete(p.cancelFns, name)
+	}
+	p.mu.Unlock()
+
+	// Give the cluster a moment to drain, but don't block if not needed.
+	// The cluster's Start() will return when the context is cancelled.
+	_ = cl
+}
+
+// hashBytes returns the SHA256 hex digest of data, used to detect kubeconfig
+// Secret changes without storing the raw kubeconfig in memory.
+func hashBytes(data []byte) string {
+	h := sha256.New()
+	h.Write(data)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func (p *Provider) clusterFromClusterProfile(ctx context.Context, cp *unstructured.Unstructured) (cluster.Cluster, error) {

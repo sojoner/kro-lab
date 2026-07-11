@@ -1,4 +1,5 @@
 ingress:
+  enabled: false
   host: bm4080.taildf7067.ts.net
 
 cert-manager:
@@ -16,6 +17,38 @@ dex:
   resources:
     requests: { cpu: 20m, memory: 64Mi }
     limits: { cpu: 100m, memory: 128Mi }
+  infrastructureClients:
+    - id: us-spoke-controller
+      name: US Spoke Controller (Infrastructure)
+      secret: us-spoke-controller-secret-demo
+    - id: eu-spoke-controller
+      name: EU Spoke Controller (Infrastructure)
+      secret: eu-spoke-controller-secret-demo
+    - id: asia-spoke-controller
+      name: Asia Spoke Controller (Infrastructure)
+      secret: asia-spoke-controller-secret-demo
+  tenantClients:
+    - id: acme-corp-us-controller
+      name: ACME Corp US Controller
+      secret: acme-corp-us-secret-demo
+  connectors: []
+  # Example multi-IDP connectors:
+  # connectors:
+  #   - type: oidc
+  #     id: acme-corp-okta
+  #     name: ACME Corp (Okta)
+  #     config:
+  #       issuer: https://acme-corp.okta.com
+  #       clientID: ${ACME_OKTA_CLIENT_ID}
+  #       clientSecret: ${ACME_OKTA_CLIENT_SECRET}
+  #   - type: github
+  #     id: startup-x-github
+  #     name: Startup X (GitHub)
+  #     config:
+  #       clientID: ${STARTUPX_GITHUB_CLIENT_ID}
+  #       clientSecret: ${STARTUPX_GITHUB_CLIENT_SECRET}
+  #       orgs:
+  #         - startup-x
 
 bindingController:
   replicas: 1
@@ -27,6 +60,31 @@ bindingController:
   resources:
     requests: { cpu: 20m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }
+  dex:
+    enabled: false
+    clientID: us-spoke-controller
+    secretName: binding-controller-dex
+    secretKey: client-secret
+    pluginImage:
+      repository: dex-auth-plugin
+      tag: local
+      pullPolicy: IfNotPresent
+
+tokenRotator:
+  enabled: true
+  replicas: 1
+  image:
+    repository: token-rotator
+    tag: local
+    pullPolicy: IfNotPresent
+  dexIssuer: "https://bm4080.taildf7067.ts.net/dex"
+  dexClientIDTemplate: "{region}-spoke-controller"
+  dexSecretName: token-rotator-dex
+  dexSecretKey: client-secret
+  kubeconfigSecretSuffix: "-access-kubeconfig"
+  resources:
+    requests: { cpu: 10m, memory: 16Mi }
+    limits: { cpu: 50m, memory: 64Mi }
 
 cronjob:
   schedule: "*/2 * * * *"

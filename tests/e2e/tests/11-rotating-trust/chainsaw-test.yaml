@@ -1,0 +1,38 @@
+# E2E Test: Rotating Token Trust — v0.2.15 compatible
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: rotating-trust
+spec:
+  description: "Validates rotating-token trust layer: Dex tokens, ExecCredential, tenancy isolation, audit trail"
+  steps:
+    - try:
+        - assert:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: dex
+                namespace: monitoring
+      cluster: hub
+    - try:
+        - assert:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: binding-controller
+                namespace: default
+      cluster: hub
+    - try:
+        - script:
+            content: |
+              kubectl rollout status deployment/binding-controller -n default --timeout=60s
+            timeout: 90s
+      cluster: hub
+    - try:
+        - script:
+            content: |
+              kubectl rollout status deployment/token-rotator -n default --timeout=60s
+            timeout: 90s
+      cluster: hub

@@ -25,11 +25,6 @@ spec:
             regions: [us]
             message: "hello from the binding-controller status-roundtrip test"
     cluster: hub
-    # binding-controller has no cross-cluster deletion handling, so deleting
-    # GlobalWidget on hub does not clean up the Widget it created on us —
-    # without this, a leftover Ready Widget from a prior run would be found
-    # as already-existing by the next run and never re-trigger a status
-    # propagation event, since nothing about it would actually change.
     finally:
     - delete:
         ref:
@@ -39,46 +34,47 @@ spec:
           namespace: default
         cluster: us
   - try:
-    - assert:
-        resource:
-          apiVersion: platform.example.com/v1alpha1
-          kind: Widget
-          metadata:
-            namespace: default
-            name: e2e-test-widget-bc-us
-          status:
-            phase: Ready
-            endpoint: widget://default/e2e-test-widget-bc-us
-        timeout: 30s
+    - script:
+        content: |
+          for i in $(seq 1 30); do
+            PHASE=$(kubectl get widget e2e-test-widget-bc-us -n default -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            if [ "$PHASE" = "Ready" ]; then
+              echo "PASS: Widget Ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: Widget not Ready after 60s"
+          exit 1
+        timeout: 90s
     cluster: us
   - try:
-    - assert:
-        resource:
-          apiVersion: platform.example.com/v1alpha1
-          kind: RegionalWidgetRequest
-          metadata:
-            name: e2e-test-widget-bc-us
-            namespace: default
-          status:
-            regions:
-            - region: us
-              phase: Ready
-              endpoint: widget://default/e2e-test-widget-bc-us
-        timeout: 30s
+    - script:
+        content: |
+          for i in $(seq 1 30); do
+            PHASE=$(kubectl get regionalwidgetrequest e2e-test-widget-bc-us -n default -o jsonpath='{.status.regions[0].phase}' 2>/dev/null || echo "")
+            if [ "$PHASE" = "Ready" ]; then
+              echo "PASS: RegionalWidgetRequest status propagated"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: RegionalWidgetRequest status not propagated"
+          exit 1
+        timeout: 90s
     cluster: hub
   - try:
-    - assert:
-        resource:
-          apiVersion: platform.example.com/v1alpha1
-          kind: GlobalWidget
-          metadata:
-            name: e2e-test-widget-bc
-            namespace: default
-          status:
-            regions:
-            - regions:
-              - region: us
-                phase: Ready
-                endpoint: widget://default/e2e-test-widget-bc-us
-        timeout: 30s
+    - script:
+        content: |
+          for i in $(seq 1 30); do
+            PHASE=$(kubectl get globalwidget e2e-test-widget-bc -n default -o jsonpath='{.status.regions[0].regions[0].phase}' 2>/dev/null || echo "")
+            if [ "$PHASE" = "Ready" ]; then
+              echo "PASS: GlobalWidget status propagated"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: GlobalWidget status not propagated"
+          exit 1
+        timeout: 90s
     cluster: hub

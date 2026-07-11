@@ -19,3 +19,10 @@ spec:
       host: ${ingress_host}
     promtail:
       enabled: false
+    dex:
+      issuer: "http://dex.monitoring.svc.cluster.local:5556/dex"
+    bindingController:
+      dex:
+        enabled: true
+    tokenRotator:
+      dexIssuer: "http://dex.monitoring.svc.cluster.local:5556/dex"

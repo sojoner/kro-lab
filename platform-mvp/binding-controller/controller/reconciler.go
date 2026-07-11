@@ -78,19 +78,28 @@ func (r *RegionalWidgetReconciler) Reconcile(ctx context.Context, req reconcile.
 
 	spokeClient := spokeCluster.GetClient()
 
-	if err := r.ensureWidget(ctx, spokeClient, obj); err != nil {
+	ns := tenantNamespace(obj)
+	if err := r.ensureWidget(ctx, spokeClient, obj, ns); err != nil {
 		return reconcile.Result{}, fmt.Errorf("ensuring Widget: %w", err)
 	}
 
 	return reconcile.Result{}, nil
 }
 
-func (r *RegionalWidgetReconciler) ensureWidget(ctx context.Context, spokeClient client.Client, obj *unstructured.Unstructured) error {
+func tenantNamespace(obj *unstructured.Unstructured) string {
+	tenantID, found, _ := unstructured.NestedString(obj.Object, "spec", "tenant", "id")
+	if found && tenantID != "" {
+		return tenantID
+	}
+	return widgetNamespace
+}
+
+func (r *RegionalWidgetReconciler) ensureWidget(ctx context.Context, spokeClient client.Client, obj *unstructured.Unstructured, ns string) error {
 	name := obj.GetName()
 	message, _, _ := unstructured.NestedString(obj.Object, "spec", "message")
 
 	widget := &widgetv1alpha1.Widget{}
-	err := spokeClient.Get(ctx, client.ObjectKey{Name: name, Namespace: widgetNamespace}, widget)
+	err := spokeClient.Get(ctx, client.ObjectKey{Name: name, Namespace: ns}, widget)
 	if err == nil {
 		return nil
 	}
@@ -101,7 +110,7 @@ func (r *RegionalWidgetReconciler) ensureWidget(ctx context.Context, spokeClient
 	widget = &widgetv1alpha1.Widget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: widgetNamespace,
+			Namespace: ns,
 		},
 		Spec: widgetv1alpha1.WidgetSpec{Message: message},
 	}

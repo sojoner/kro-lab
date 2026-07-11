@@ -22,8 +22,12 @@ kubeconfig-*
 deploy/platform-mvp/chart/*/charts/*.tgz
 deploy/platform-mvp/chart/*/Chart.lock
 
+# AI assistant plan files (not part of the codebase)
+.claude/
+
 # Chainsaw test run artifacts
 tests/e2e/chainsaw-report.json
+chainsaw-report.json
 
 # Cryptographic key material (do not commit)
 *.pem

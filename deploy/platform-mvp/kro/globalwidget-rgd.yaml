@@ -10,6 +10,7 @@ spec:
     spec:
       regions: '[]string | description="Regions to provision widgets in (us, eu, asia)"'
       message: string | default="" description="Payload carried through to each region's Widget"
+      tenant: 'map[string]interface{} | description="Optional tenant identity for spoke-side namespace isolation"'
     status:
       regions: ${regionalWidgetRequest.map(r, r.status)}
   resources:
@@ -22,5 +23,6 @@ spec:
         spec:
           region: "${region}"
           message: "${schema.spec.message}"
+          tenant: '${schema.spec.tenant has "id" ? schema.spec.tenant : {}}'
       forEach:
         - region: "${schema.spec.regions}"
