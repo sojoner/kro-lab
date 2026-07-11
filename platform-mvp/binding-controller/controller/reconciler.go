@@ -49,7 +49,7 @@ func SetupWithManager(mgr mcmanager.Manager, r *RegionalWidgetReconciler) error 
 		Complete(r)
 }
 
-func (r *RegionalWidgetReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+func (r *RegionalWidgetReconciler) Reconcile(ctx context.Context, req reconcile.Request) (res reconcile.Result, retErr error) {
 	logger := log.FromContext(ctx)
 
 	obj := &unstructured.Unstructured{}
@@ -67,6 +67,16 @@ func (r *RegionalWidgetReconciler) Reconcile(ctx context.Context, req reconcile.
 		return reconcile.Result{}, fmt.Errorf("regional widget request %s missing spec.region", req.Name)
 	}
 
+	tenantID := tenantNamespace(obj)
+
+	defer func() {
+		result := "success"
+		if retErr != nil {
+			result = "error"
+		}
+		ReconcileTotal.WithLabelValues(tenantID, region, result).Inc()
+	}()
+
 	spokeCluster, err := r.Manager.GetCluster(ctx, region)
 	if err != nil {
 		if err == multicluster.ErrClusterNotFound {
@@ -78,8 +88,7 @@ func (r *RegionalWidgetReconciler) Reconcile(ctx context.Context, req reconcile.
 
 	spokeClient := spokeCluster.GetClient()
 
-	ns := tenantNamespace(obj)
-	if err := r.ensureWidget(ctx, spokeClient, obj, ns); err != nil {
+	if err = r.ensureWidget(ctx, spokeClient, obj, tenantID); err != nil {
 		return reconcile.Result{}, fmt.Errorf("ensuring Widget: %w", err)
 	}
 

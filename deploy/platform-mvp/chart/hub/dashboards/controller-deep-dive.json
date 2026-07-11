@@ -221,6 +221,58 @@
           "unit": "s"
         }
       }
+    },
+    {
+      "id": 11,
+      "title": "Reconciles by Tenant (2m rate)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 8,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(binding_controller_reconcile_total[2m])) by (tenant_id)",
+          "refId": "A",
+          "legendFormat": "{{tenant_id}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 30,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Widgets by Namespace (Tenancy Separation)",
+      "type": "logs",
+      "gridPos": {
+        "x": 8,
+        "y": 27,
+        "w": 8,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "{namespace=~\"default|acme-corp|startup-x\"} |= \"Widget\"",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
     }
   ],
   "schemaVersion": 39

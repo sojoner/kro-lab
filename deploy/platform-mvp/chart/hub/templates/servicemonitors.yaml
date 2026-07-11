@@ -16,4 +16,22 @@ spec:
   namespaceSelector:
     matchNames:
       - default
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: token-rotator
+  namespace: monitoring
+  labels:
+    release: kps
+spec:
+  selector:
+    matchLabels:
+      app: token-rotator
+  endpoints:
+    - port: metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - default
 {{- end }}

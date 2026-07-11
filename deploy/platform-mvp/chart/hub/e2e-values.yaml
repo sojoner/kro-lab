@@ -2,7 +2,7 @@
 # Usage: helm install hub . -f values.yaml -f e2e-values.yaml
 
 ingress:
-  enabled: true
+  enabled: false  # enabled post-install to avoid webhook deadlock
 
 cert-manager:
   installCRDs: false

@@ -1,0 +1,115 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: dashboard-metrics-validation
+spec:
+  description: "Phase 12 — Verify Grafana dashboards exist and Prometheus metrics have realistic values"
+  steps:
+  - try:
+    - assert:
+        resource:
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            namespace: monitoring
+            name: token-rotator
+    cluster: hub
+  - try:
+    - script:
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n default wait --for=condition=Available deploy/token-rotator --timeout=30s
+    cluster: hub
+  - try:
+    - script:
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n default port-forward svc/token-rotator 18080:8080 &
+          PF_PID=$!
+          sleep 3
+          METRICS=$(curl -s http://localhost:18080/metrics || echo "")
+          kill $PF_PID 2>/dev/null || true
+          for metric in token_rotator_rotations_total token_rotator_rotation_errors_total token_rotator_last_rotation_timestamp_seconds; do
+            if echo "$METRICS" | grep -q "$metric"; then
+              echo "PASS: metric $metric found"
+            else
+              echo "FAIL: metric $metric not found in /metrics"
+              exit 1
+            fi
+          done
+          echo "PASS: all token_rotator metrics present"
+    cluster: hub
+  - try:
+    - script:
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n default port-forward svc/binding-controller 18081:8080 &
+          PF_PID=$!
+          sleep 3
+          METRICS=$(curl -s http://localhost:18081/metrics || echo "")
+          kill $PF_PID 2>/dev/null || true
+          if echo "$METRICS" | grep -q "binding_controller_reconcile_total"; then
+            echo "PASS: binding_controller_reconcile_total found"
+          else
+            echo "FAIL: binding_controller_reconcile_total not found"
+            exit 1
+          fi
+    cluster: hub
+  - try:
+    - script:
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-grafana 3000:80 &
+          PF_PID=$!
+          sleep 5
+          DASHBOARDS=$(curl -s http://admin:admin@localhost:3000/api/search?type=dash-db || echo "[]")
+          kill $PF_PID 2>/dev/null || true
+          for uid in token-rotation controller-deep-dive cluster-fitness chainsaw-results; do
+            if echo "$DASHBOARDS" | grep -q "\"$uid\""; then
+              echo "PASS: dashboard $uid found"
+            else
+              echo "FAIL: dashboard $uid not found in Grafana"
+              exit 1
+            fi
+          done
+          echo "PASS: all 4 dashboards present"
+    cluster: hub
+  - try:
+    - script:
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-kube-prometheus-stack-prometheus 9090:9090 &
+          PF_PID=$!
+          sleep 5
+          for metric in token_rotator_rotations_total binding_controller_reconcile_total; do
+            RESULT=$(curl -s "http://localhost:9090/api/v1/query?query=${metric}" | grep -c '"value"' || echo "0")
+            if [ "$RESULT" -gt "0" ]; then
+              echo "PASS: Prometheus has $metric data"
+            else
+              echo "FAIL: Prometheus returned no data for $metric"
+              kill $PF_PID 2>/dev/null || true
+              exit 1
+            fi
+          done
+          kill $PF_PID 2>/dev/null || true
+          echo "PASS: all custom metrics visible in Prometheus"
+    cluster: hub
+  - try:
+    - script:
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-kube-prometheus-stack-prometheus 9090:9090 &
+          PF_PID=$!
+          sleep 5
+          NOW=$(date +%s)
+          LATEST=$(curl -s "http://localhost:9090/api/v1/query?query=token_rotator_last_rotation_timestamp_seconds" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          values = [float(r['value'][1]) for r in data.get('data', {}).get('result', [])]
+          print(max(values) if values else '0')
+          " 2>/dev/null || echo "0")
+          kill $PF_PID 2>/dev/null || true
+          if [ "$LATEST" = "0" ]; then
+            echo "FAIL: no rotation timestamp data"
+            exit 1
+          fi
+          AGE=$(($NOW - ${LATEST%.*}))
+          echo "PASS: last rotation $AGE seconds ago"
+          if [ "$AGE" -gt 600 ]; then
+            echo "WARN: last rotation > 10 min ago, may indicate stale tokens"
+          fi
+    cluster: hub

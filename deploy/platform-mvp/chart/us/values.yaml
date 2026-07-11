@@ -3,9 +3,9 @@ widgetOperator:
   replicas: 1
   readyDelay: 2s
   image:
-    repository: widget-operator
-    tag: local
-    pullPolicy: IfNotPresent
+    repository: sojoner/widget-operator
+    tag: dev
+    pullPolicy: Always
   resources:
     requests: { cpu: 20m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }
@@ -30,9 +30,9 @@ oidcVerifier:
       ]
     }
   image:
-    repository: oidc-verifier
-    tag: local
-    pullPolicy: IfNotPresent
+    repository: sojoner/oidc-verifier
+    tag: dev
+    pullPolicy: Always
   resources:
     requests: { cpu: 10m, memory: 16Mi }
     limits: { cpu: 50m, memory: 64Mi }

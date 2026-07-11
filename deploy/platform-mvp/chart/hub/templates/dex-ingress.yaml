@@ -1,4 +1,4 @@
-{{ if .Values.dex.enabled }}
+{{- if and .Values.dex.enabled .Values.ingress.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress

@@ -77,21 +77,21 @@ make validate   # run all Chainsaw E2E test suites at once
 make clean      # destroy everything
 ```
 
-### Dashboard Link
+### Dashboard Links
 
-After deployment:
+After deployment, access Grafana at `http://bm4080.taildf7067.ts.net` (login: `admin` / `admin`):
+
+| Dashboard | URL | What It Shows |
+|-----------|-----|---------------|
+| Cluster Fitness | [`/d/cluster-fitness`](http://bm4080.taildf7067.ts.net/d/cluster-fitness) | Node readiness, CPU%, memory, API server health across both clusters |
+| Chainsaw Test Results | [`/d/chainsaw-results`](http://bm4080.taildf7067.ts.net/d/chainsaw-results) | E2E test pass/fail, duration trends, pass rate over time |
+| Controller Deep Dive | [`/d/controller-deep-dive`](http://bm4080.taildf7067.ts.net/d/controller-deep-dive) | Reconcile throughput, latency, per-tenant breakdown, spoke API latency |
+| Token Rotation | [`/d/token-rotation`](http://bm4080.taildf7067.ts.net/d/token-rotation) | Token rotation rate per region, last rotation age, error rate, debug logs |
 
 ```bash
-make grafana-url
+make grafana-url   # print all dashboard URLs
+make grafana       # port-forward Grafana → http://localhost:3000 (admin/admin)
 ```
-
-| Dashboard | URL |
-|-----------|-----|
-| Cluster Fitness | `http://bm4080.taildf7067.ts.net/d/cluster-fitness` |
-| Chainsaw Test Results | `http://bm4080.taildf7067.ts.net/d/chainsaw-results` |
-| Controller Deep Dive | `http://bm4080.taildf7067.ts.net/d/controller-deep-dive` |
-
-Login: `admin` / `admin`
 
 ## Guided Validation — Chainsaw Test Suites
 
@@ -144,6 +144,23 @@ chainsaw test tests/e2e --test 10-oidc-trust
 IDP to spoke oidc-verifier. Cross-cluster JWKS-based trust. Full audit trail
 from JWT verification → stdout → promtail → Loki → Grafana.
 
+### Rotating Trust & Observability (tests 11-12)
+
+```bash
+chainsaw test tests/e2e --test 11-rotating-trust
+chainsaw test tests/e2e --test 12-dashboard-metrics
+```
+
+| Test | What It Proves |
+|------|----------------|
+| 11-rotating-trust | Token rotator renews Dex tokens per region; kubeconfig Secrets updated |
+| 12-dashboard-metrics | All 4 Grafana dashboards loaded; custom Prometheus metrics for token rotation and multi-tenancy scraped and visible |
+
+**What this proves**: Token rotation keeps spoke access fresh without manual
+intervention. Custom metrics (`token_rotator_*`, `binding_controller_reconcile_total`)
+are served by the application, scraped by Prometheus, and visible in Grafana
+dashboards — proving multi-tenancy and token rotation in real time.
+
 ## Development Workflow (TDD)
 
 ```
@@ -181,7 +198,7 @@ make test         # must still PASS
 | `make deploy` | Full deployment (clusters + us + hub) |
 | `make deploy-us` | Install widget-operator + oidc-verifier on us |
 | `make deploy-hub` | Install LGTM + Dex + cert-manager + Kro + Flux on hub |
-| `make validate` | Run all Chainsaw E2E tests (1-10) |
+| `make validate` | Run all Chainsaw E2E tests (1-12) |
 | `make validate-p1-p6` | Core platform tests (cluster, fleet, kro, binding) |
 | `make validate-p7-p9` | Observability tests (stack, cronjob, ingress) |
 | `make grafana` | Port-forward Grafana → localhost:3000 |
@@ -198,7 +215,7 @@ make test         # must still PASS
 │   │   ├── templates/             #   dashboards, event-exporter, servicemonitors,
 │   │   │                         #   fleet, chainsaw, kro-rgd, grafana-ingress,
 │   │   │                         #   dex, dex-ingress, cert-manager, binding-controller
-│   │   ├── dashboards/            #   3 Grafana dashboard JSONs
+│   │   ├── dashboards/            #   4 Grafana dashboard JSONs
 │   │   ├── Chart.yaml             #   Dependencies: kube-prometheus-stack, loki, promtail,
 │   │   └── values.yaml            #                  ingress-nginx, cert-manager
 │   ├── chart/us/                  # Helm chart (widget-operator + oidc-verifier)
@@ -223,7 +240,7 @@ make test         # must still PASS
 ├── providers/
 │   └── cluster-inventory-api/     # ClusterProfile-backed Provider (Go)
 ├── tests/e2e/                     # Chainsaw test suites
-│   ├── tests/                     #   01..10 progressive validation
+│   ├── tests/                     #   01..12 progressive validation
 │   └── .chainsaw.yaml
 ├── docs/platform-mvp/             # Implementation docs per phase (incl. OIDC)
 ├── .claude/                       # AI assistant working docs (plans/specs)

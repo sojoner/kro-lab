@@ -1,11 +1,6 @@
 {{ if .Values.dex.enabled }}
 ---
 apiVersion: v1
-kind: Namespace
-metadata:
-  name: {{ .Values.dex.namespace }}
----
-apiVersion: v1
 kind: ConfigMap
 metadata:
   name: dex-config

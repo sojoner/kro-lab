@@ -128,6 +128,8 @@ func (r *TokenRotatorReconciler) Reconcile(ctx context.Context, req reconcile.Re
 
 	token, err := r.fetchToken(clientID)
 	if err != nil {
+		RotationsTotal.WithLabelValues(region, "error").Inc()
+		RotationErrorsTotal.WithLabelValues(region, "token_fetch").Inc()
 		return reconcile.Result{}, fmt.Errorf("fetching Dex token for %s: %w", region, err)
 	}
 
@@ -160,15 +162,23 @@ func (r *TokenRotatorReconciler) Reconcile(ctx context.Context, req reconcile.Re
 	if err == nil {
 		existing.Data = secret.Data
 		if updateErr := r.hubClient.Update(ctx, existing); updateErr != nil {
+			RotationsTotal.WithLabelValues(region, "error").Inc()
+			RotationErrorsTotal.WithLabelValues(region, "secret_update").Inc()
 			return reconcile.Result{}, fmt.Errorf("updating kubeconfig Secret: %w", updateErr)
 		}
+		RotationsTotal.WithLabelValues(region, "success").Inc()
+		LastRotationTimestamp.WithLabelValues(region).Set(float64(time.Now().Unix()))
 		return reconcile.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
 
 	if apierrors.IsNotFound(err) {
 		if createErr := r.hubClient.Create(ctx, secret); createErr != nil {
+			RotationsTotal.WithLabelValues(region, "error").Inc()
+			RotationErrorsTotal.WithLabelValues(region, "secret_create").Inc()
 			return reconcile.Result{}, fmt.Errorf("creating kubeconfig Secret: %w", createErr)
 		}
+		RotationsTotal.WithLabelValues(region, "success").Inc()
+		LastRotationTimestamp.WithLabelValues(region).Set(float64(time.Now().Unix()))
 		return reconcile.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
 

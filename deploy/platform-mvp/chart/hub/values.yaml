@@ -54,9 +54,9 @@ bindingController:
   replicas: 1
   metricsPort: 8080
   image:
-    repository: binding-controller
-    tag: local
-    pullPolicy: IfNotPresent
+    repository: sojoner/binding-controller
+    tag: dev
+    pullPolicy: Always
   resources:
     requests: { cpu: 20m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }
@@ -66,17 +66,17 @@ bindingController:
     secretName: binding-controller-dex
     secretKey: client-secret
     pluginImage:
-      repository: dex-auth-plugin
-      tag: local
-      pullPolicy: IfNotPresent
+      repository: sojoner/dex-auth-plugin
+      tag: dev
+      pullPolicy: Always
 
 tokenRotator:
   enabled: true
   replicas: 1
   image:
-    repository: token-rotator
-    tag: local
-    pullPolicy: IfNotPresent
+    repository: sojoner/token-rotator
+    tag: dev
+    pullPolicy: Always
   dexIssuer: "https://bm4080.taildf7067.ts.net/dex"
   dexClientIDTemplate: "{region}-spoke-controller"
   dexSecretName: token-rotator-dex
