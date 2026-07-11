@@ -1,55 +1,117 @@
-# 04 — Kro GlobalWidget API
+# Phase 4 — Kro GlobalWidget API
 
-## Goal
-Hub-only Kro RGD that expands one customer-facing object into per-region intents.
+The Kro `GlobalWidget` ResourceGraphDefinition (RGD) on the hub declaratively expands a single `GlobalWidget` resource into one `RegionalWidgetRequest` per target region.
 
-## Prerequisites
-- Phase 3 complete
-- Kro installed on hub
+---
 
-## Steps
+## Resource Graph
 
-```bash
-# Register the RegionalWidgetRequest CRD first — kro resolves resource
-# templates via API discovery, it does not auto-create CRDs for them.
-kubectl --context kind-hub apply -f deploy/platform-mvp/kro/regionalwidgetrequest-crd.yaml
+```mermaid
+graph LR
+    GW["GlobalWidget<br/>(hub)"]
+    RWR_US["RegionalWidgetRequest/us<br/>(hub)"]
+    RWR_EU["RegionalWidgetRequest/eu<br/>(hub)"]
+    RWR_ASIA["RegionalWidgetRequest/asia<br/>(hub)"]
+    W_US["Widget<br/>(kind-us)"]
+    W_EU["Widget<br/>(kind-eu)"]
+    W_ASIA["Widget<br/>(kind-asia)"]
 
-# Grant kro's controller RBAC on the platform.example.com group — kro's
-# default install only has permissions for its own CRDs (kro.run), not
-# arbitrary custom API groups it generates CRDs for.
-kubectl --context kind-hub apply -f deploy/platform-mvp/kro/kro-rbac.yaml
+    GW -->|"forEach spec.regions"| RWR_US
+    GW -->|"forEach spec.regions"| RWR_EU
+    GW -->|"forEach spec.regions"| RWR_ASIA
 
-# Apply the GlobalWidget ResourceGraphDefinition
-kubectl --context kind-hub apply -f deploy/platform-mvp/kro/globalwidget-rgd.yaml
-
-# Create a test GlobalWidget
-kubectl --context kind-hub apply -f - <<EOF
-apiVersion: platform.example.com/v1alpha1
-kind: GlobalWidget
-metadata:
-  name: my-widget
-spec:
-  regions: [us]
-  message: "hello world"
-EOF
-
-# Verify RegionalWidgetRequest created
-kubectl --context kind-hub get regionalwidgetrequest my-widget-us -o yaml
+    RWR_US -.->|"Binding Controller"| W_US
+    RWR_EU -.->|"Binding Controller"| W_EU
+    RWR_ASIA -.->|"Binding Controller"| W_ASIA
 ```
 
-## Schema
-- `spec.regions: []string` — regions to provision (us, eu, asia)
-- `spec.message: string` — payload carried through to each region's Widget
-- `status.regions` — CEL-aggregated from the `regionalWidgetRequest` collection
+## GlobalWidget Schema
 
-## Template
-`forEach` over `spec.regions`, emits `RegionalWidgetRequest` per region with `region`, `message` fields. An empty `regions` list yields zero resources.
+Defined in `kro/globalwidget-rgd.yaml`:
 
-## Files produced
-- `deploy/platform-mvp/kro/regionalwidgetrequest-crd.yaml`
-- `deploy/platform-mvp/kro/kro-rbac.yaml`
-- `deploy/platform-mvp/kro/globalwidget-rgd.yaml`
+```yaml
+spec:
+  regions: []string    # Target regions (us, eu, asia)
+  message: string      # Payload carried through to Widgets
+  tenant:              # Tenant isolation (passthrough)
+    id: string
+```
+
+**Status** (`globalwidget-rgd.yaml:14`):
+
+```yaml
+status:
+  regions: ${regionalWidgetRequest.map(r, r.status)}
+```
+
+This uses Kro's **CEL expression** to aggregate all child `RegionalWidgetRequest` statuses into the parent `GlobalWidget` status — providing a consolidated view across all regions.
+
+## RGD Template
+
+The core template (`globalwidget-rgd.yaml:16-27`) uses `forEach`:
+
+```yaml
+resource:
+  forEach:
+    items: "${schema.spec.regions}"
+    name: "${schema.metadata.name}-${region}"
+    resource:
+      apiVersion: platform.example.com/v1alpha1
+      kind: RegionalWidgetRequest
+      spec:
+        region: "${region}"
+        message: "${schema.spec.message}"
+        tenant: '${schema.spec.tenant}'
+```
+
+Key behaviors:
+- **Naming**: `GlobalWidget.name + "-" + region` (e.g., `acme-production-us`)
+- **Template passthrough**: `spec.tenant` is forwarded verbatim to each `RegionalWidgetRequest`
+- **Zero-code region expansion**: Adding `eu` to `spec.regions` automatically produces a `RegionalWidgetRequest/eu`
+
+## RegionalWidgetRequest CRD
+
+Defined in `deploy/platform-mvp/chart/hub/templates/regionalwidgetrequest-crd.yaml`:
+
+```yaml
+spec:
+  properties:
+    region:    { type: string, enum: [us, eu, asia] }
+    message:   { type: string, default: "" }
+    tenant:                          # NEW: Multi-tenancy support
+      type: object
+      properties:
+        id: { type: string }
+```
+
+**Status** subresource: `regions[]` array with `region`, `phase`, `endpoint` per entry.
+
+## Prerequisites
+
+Before applying the RGD, the `RegionalWidgetRequest` CRD must be registered on the hub — Kro resolves resource templates via Kubernetes API discovery. The hub Helm chart handles this ordering via `regionalwidgetrequest-crd.yaml`.
+
+Additionally, Kro's controller needs RBAC for the `platform.example.com` API group (`chart/hub/templates/kro-rbac.yaml`).
+
+## Deployment
+
+1. **CRD first**: `kubectl apply -f regionalwidgetrequest-crd.yaml`
+2. **Kro RBAC**: `kubectl apply -f kro-rbac.yaml`
+3. **RGD**: `kubectl apply -f globalwidget-rgd.yaml`
+
+Or via Helm: `helm install hub ./chart/hub` (templates handle ordering).
 
 ## Acceptance
-- Applying a `GlobalWidget{regions:[us]}` produces exactly one `RegionalWidgetRequest`
-- `chainsaw test tests/e2e --test 05-kro-globalwidget` passes
+
+- A `GlobalWidget{regions:[us], message:"hello", tenant:{id:acme-corp}}` produces exactly one `RegionalWidgetRequest` on hub
+- The `RegionalWidgetRequest` carries `region=us`, `message=hello`, `tenant.id=acme-corp`
+- `05-kro-globalwidget` Chainsaw test passes
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `kro/globalwidget-rgd.yaml` | GlobalWidget RGD definition |
+| `kro/regionalwidgetrequest-crd.yaml` | RegionalWidgetRequest CRD |
+| `deploy/platform-mvp/chart/hub/templates/regionalwidgetrequest-crd.yaml` | CRD (chart-embedded copy) |
+| `deploy/platform-mvp/chart/hub/templates/kro-rgd.yaml` | RGD (chart-embedded copy) |
+| `deploy/platform-mvp/chart/hub/templates/kro-rbac.yaml` | RBAC for platform.example.com API group |

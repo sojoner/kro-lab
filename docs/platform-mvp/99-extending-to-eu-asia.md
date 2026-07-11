@@ -1,40 +1,102 @@
-# 99 — Extending to EU/ASIA (design-only)
+# Phase 99 — Extending to EU and ASIA Regions
 
-This document describes the extension path without implementing it.
+The platform is designed for zero-code region extension. Adding a new spoke cluster requires only infrastructure provisioning and a single YAML file.
 
-## What's already handled
+---
 
-The architecture is designed for multi-region from day one:
+## What's Already Handled
 
-- **Kro RGD**: `spec.regions` is `[]string` — adding `eu` or `asia` requires zero RGD changes
-- **Binding controller**: uses `mgr.GetCluster(ctx, ClusterName(region))` generically — any registered ClusterProfile is automatically discovered
-- **RegionalWidgetRequest**: schema supports arbitrary region names
+| Aspect | Mechanism |
+|--------|-----------|
+| **Region list** | `spec.regions` is `[]string` on `GlobalWidget` — just add `"eu"` or `"asia"` |
+| **Cluster resolution** | Binding controller uses `mgr.GetCluster(ctx, region)` — provider resolves any region name |
+| **RegionalWidgetRequest** | Supports arbitrary region names (enum: `us`, `eu`, `asia` in CRD validation) |
+| **Tenant isolation** | Tenant namespace routing works unchanged per-region |
+| **Token rotation** | `dexClientIDTemplate: "{region}-spoke-controller"` auto-resolves per-region client IDs |
+| **Phase 4–5 logic** | Kro RGD + Binding Controller — **zero changes required** |
 
-## What's needed per new region
+## What's Needed Per New Region
 
-Repeat these steps for each new region (e.g., `eu`):
+### 1. Create the kind cluster
 
-### Phase 1 — New kind cluster
 ```bash
 kind create cluster --name eu --config deploy/platform-mvp/kind/kind-eu.yaml
-kind get kubeconfig --name eu --internal > hack/platform-mvp/kubeconfig-eu-internal
+kind create cluster --name asia --config deploy/platform-mvp/kind/kind-asia.yaml
 ```
 
-### Phase 2 — Widget operator in new cluster
+### 2. Deploy spoke components
+
 ```bash
-# Deploy widget-operator on eu
+make deploy-spoke REGION=eu
+make deploy-spoke REGION=asia
 ```
 
-### Phase 3 — New ClusterProfile
-```yaml
-apiVersion: cluster.x-k8s.io/v1beta1
+This installs the Widget Operator + Widget CRD + OIDC Verifier per spoke.
+
+### 3. Register on hub
+
+For each new region, create a `ClusterProfile` and kubeconfig Secret on the hub:
+
+```bash
+# Extract internal kubeconfig from kind container
+kind get kubeconfig --name eu --internal > eu-internal.kubeconfig
+
+# Register on hub
+kubectl --context kind-hub create secret generic eu-kubeconfig \
+  -n default --from-file=kubeconfig=eu-internal.kubeconfig
+
+cat <<EOF | kubectl --context kind-hub apply -f -
+apiVersion: multicluster.x-k8s.io/v1alpha1
 kind: ClusterProfile
 metadata:
   name: eu
-spec:
-  kubeconfigSecretRef:
-    name: eu-kubeconfig
+EOF
 ```
 
-### Phase 4-5 — No changes needed
-Kro RGD and binding controller already handle arbitrary regions.
+### 4. Done
+
+The token-rotator automatically picks up the new `ClusterProfile` and begins rotating tokens. The multicluster provider engages the new cluster. Creating a `GlobalWidget{regions:[us, eu, asia]}` now produces one `RegionalWidgetRequest` per region, and the binding-controller creates Widgets on all three spokes.
+
+```mermaid
+graph LR
+    GW["GlobalWidget<br/>{regions:[us,eu,asia]}"]
+
+    GW -->|"Kro forEach"| RWR_US["RWR/us → Widget<br/>on kind-us"]
+    GW -->|"Kro forEach"| RWR_EU["RWR/eu → Widget<br/>on kind-eu"]
+    GW -->|"Kro forEach"| RWR_ASIA["RWR/asia → Widget<br/>on kind-asia"]
+```
+
+### With Multi-Tenancy
+
+```yaml
+apiVersion: platform.example.com/v1alpha1
+kind: GlobalWidget
+metadata:
+  name: acme-global
+spec:
+  regions: [us, eu, asia]
+  message: "ACME global workload"
+  tenant:
+    id: acme-corp
+```
+
+This creates Widgets in `acme-corp` namespace on all three spokes — tenant isolation works identically across all regions.
+
+---
+
+## Required Infrastructure Per Region
+
+| Item | Needed? | Notes |
+|------|---------|-------|
+| kind cluster (or real cluster) | Yes | 1 CP + workers per region |
+| Widget Operator | Yes | `make deploy-spoke` |
+| Widget CRD | Yes | Bundled with widget-operator |
+| OIDC Verifier | Yes | All verifiers point to hub's Dex |
+| Tenant namespaces + RBAC | Yes | `make deploy-spoke` creates them |
+| ClusterProfile on hub | Yes | `kubectl apply -f` |
+| kubeconfig Secret on hub | Yes | Internal kubeconfig from cluster |
+| Dex client per region | Yes | `{region}-spoke-controller` entry in `values.yaml` |
+| GlobalWidget RGD change | **No** | Already supports arbitrary `spec.regions` |
+| Binding controller change | **No** | `mgr.GetCluster(ctx, region)` generic |
+| Token rotator change | **No** | `dexClientIDTemplate` auto-resolves |
+| Observability change | **No** | One hub serves all regions |

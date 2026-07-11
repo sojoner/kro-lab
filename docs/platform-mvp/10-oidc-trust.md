@@ -1,269 +1,190 @@
-# 10 — Multi-Cluster OIDC Trust
+# Phase 10 — OIDC Cross-Cluster Trust
 
-## Goal
+Dex IDP on the hub issues signed JWTs that the oidc-verifier on the spoke validates against Dex's JWKS endpoint. This creates a parallel trust layer for application workloads — complementary to the binding-controller's X.509/kubeconfig auth.
 
-Add a cross-cluster OIDC trust layer on top of the existing multi-cluster platform.
-Dex IDP on the hub issues signed JWTs; workload consumers on spoke clusters validate
-them against Dex's JWKS endpoint — proving **workload identity propagation** across
-cluster boundaries with full audit trail.
+---
 
-## What's new
-
-| Layer | Component | Cluster | Purpose |
-|-------|-----------|---------|---------|
-| TLS PKI | cert-manager + self-signed ClusterIssuer | hub | TLS for Dex, Grafana ingresses |
-| Identity | Dex IDP (v2.42.0, SQLite) | hub | OIDC issuer, client_credentials + auth code grants |
-| Verification | oidc-verifier (Go, JWKS polling) | us | Validates hub-issued JWTs, emits AUDIT logs |
-| Audit | promtail → Loki | hub | Ships oidc-verifier stdout to Loki |
-| Test | Chainsaw test-10 | hub CronJob | Proves full OIDC lifecycle end-to-end |
-
-**This does NOT replace the existing binding-controller auth (X.509/kubeconfig).**
-OIDC is a parallel trust layer for **application workloads** — services that don't
-have kubeconfig access but carry a JWT issued by the platform's IDP.
-
-## Architecture
-
-### Component diagram
+## Trust Architecture
 
 ```mermaid
 graph TB
-    subgraph hub["kind-hub (Hub Cluster)"]
-        direction TB
-        CM["cert-manager<br/>ClusterIssuer (self-signed)"]
-        NGINX["nginx-ingress<br/>TLS: Dex, Grafana"]
-        CM -.->|"issues Certificate<br/>dex-tls, grafana-tls"| NGINX
-
-        DEX["Dex IDP<br/>monitoring/dex<br/>:5556"]
-        DEX_CFG["Dex ConfigMap<br/>clients: widget-controller, chainsaw-test"]
-        DEX --- DEX_CFG
-
-        LOKI["Loki<br/>monitoring/loki<br/>:3100"]
-        PROMTAIL["promtail<br/>(DaemonSet)"]
-        GRAFANA["Grafana<br/>monitoring/hub-grafana"]
-
-        CRONJOB["Chainsaw CronJob<br/>test-10 (oidc-trust)"]
+    subgraph Hub["Hub Cluster"]
+        DEX["Dex IDP<br/>OIDC issuer<br/>JWKS endpoint (/keys)<br/>Token endpoint (/token)"]
+        CERT["cert-manager<br/>self-signed ClusterIssuer"]
+        NGINX["nginx-ingress<br/>TLS termination"]
+        TR["Token Rotator<br/>password grant → token"]
+        BC["Binding Controller<br/>(optional Dex auth)"]
+        LOKI["Loki<br/>log aggregation"]
+        EVEXP["Event Exporter<br/>K8s events → Loki"]
     end
 
-    subgraph spoke["kind-us (Spoke Cluster)"]
-        OV["oidc-verifier<br/>default/oidc-verifier<br/>:8080"]
-        WO["widget-operator<br/>default/widget-operator"]
+    subgraph Spoke["Spoke (kind-us)"]
+        OV["OIDC Verifier<br/>JWKS polling (5m)<br/>Bearer token validation<br/>structured AUDIT logs"]
+        WO["Widget Operator<br/>workload reconciliation"]
     end
 
-    WORKLOAD["Workload<br/>(widget-controller<br/>client_credentials)"]
-
-    WORKLOAD -->|"1. POST /dex/token<br/>client_id + secret"| NGINX
-    NGINX -->|"TLS passthrough"| DEX
-    DEX -->|"2. signed JWT"| WORKLOAD
-
-    WORKLOAD -->|"3. GET /verify<br/>Authorization: Bearer {jwt}"| OV
-
-    OV -->|"JWKS polling<br/>GET /dex/keys<br/>(every 5 min)"| NGINX
-    NGINX -->|"TLS"| DEX
-
-    OV -->|"AUDIT log<br/>(stdout)"| PROMTAIL
-    PROMTAIL -->|"shipped"| LOKI
-    GRAFANA -->|"queries"| LOKI
-
-    CRONJOB -->|"port-forward → dex, loki, ov"| DEX
-    CRONJOB -->|"port-forward → ov"| OV
-    CRONJOB -->|"port-forward → loki"| LOKI
-
-    style WORKLOAD fill:#e1f5fe
-    style CM fill:#fff3e0
-    style DEX fill:#fce4ec
-    style OV fill:#e8f5e9
-    style LOKI fill:#f3e5f5
+    CERT -->|"TLS cert"| NGINX
+    NGINX -->|"TLS: dex.example.com"| DEX
+    TR -->|"POST /token<br/>password grant"| DEX
+    OV -->|"GET /.well-known/openid-configuration"| DEX
+    OV -->|"GET /keys (every 5m)"| DEX
+    BC -.->|"optional: exec credential plugin<br/>client_credentials grant"| DEX
+    OV -->|"AUDIT → stdout"| OV
 ```
 
-### Sequence diagram — OIDC trust lifecycle
+---
+
+## OIDC Trust Lifecycle
 
 ```mermaid
 sequenceDiagram
-    participant CM as cert-manager
-    participant W as Workload
-    participant DEX as Dex IDP (hub)
-    participant OV as oidc-verifier (spoke)
-    participant LOKI as Loki (hub)
+    participant DEX as Dex (hub)
+    participant TR as Token Rotator (hub)
+    participant OV as OIDC Verifier (spoke)
+    participant WO as Widget Operator (spoke)
 
-    Note over CM,LOKI: Bootstrap
-    CM->>DEX: Issue TLS cert for dex-ingress
-    CM->>LOKI: Issue TLS cert for grafana-ingress
+    Note over DEX,WO: Boot Phase
+
     OV->>DEX: GET /.well-known/openid-configuration
-    OV->>DEX: GET /keys (JWKS)
-    DEX-->>OV: JWKS (RSA/EC signing keys)
-    OV->>OV: Cache keys by kid
+    DEX-->>OV: {issuer, jwks_uri, token_endpoint}
+    OV->>OV: Load static trust-jwks from ConfigMap
 
-    Note over W,LOKI: Token issuance
-    W->>DEX: POST /dex/token<br/>grant_type=client_credentials<br/>client_id=widget-controller
-    DEX->>DEX: Authenticate client
-    DEX-->>W: JWT (access_token)<br/>sub=widget-controller<br/>iss=https://host/dex
+    loop every 5m (JWKS refresh)
+        OV->>DEX: GET /keys
+        DEX-->>OV: {keys: [{kid, kty, n, e}, ...]}
+        OV->>OV: Merge new keys into trust set<br/>(static keys never removed)
+        OV->>OV: log AUDIT {"action":"jwks_refresh","detail":"loaded N keys"}
+    end
 
-    Note over OV,LOKI: Cross-cluster verification
-    W->>OV: GET /verify<br/>Authorization: Bearer {jwt}
-    OV->>OV: 1. Extract kid from JWT header
-    OV->>OV: 2. Look up public key in cached JWKS
-    OV->>OV: 3. Verify signature (RS256/ES256 etc.)
-    OV->>OV: 4. Validate iss, exp, aud claims
-    OV-->>W: {"status":"verified","claims":{...}}
-    OV->>LOKI: AUDIT {action,jwt_verify,subject,widget-controller,result,success}
+    Note over DEX,WO: Runtime — Token Issuance & Verification
+
+    TR->>DEX: POST /token (password grant)
+    DEX-->>TR: {id_token (signed JWT), access_token}
+    TR->>TR: Write spoke kubeconfig with new token
+
+    Note over WO: Widget operator needs to call spoke API
+    WO->>OV: POST /verify<br/>Authorization: Bearer <jwt>
+    OV->>OV: Extract kid from JWT header
+    OV->>OV: Lookup key in trust set
+    OV->>OV: jwt.Parse(token, keyfunc)
+    alt token valid
+        OV-->>WO: {"status":"verified","claims":{...}}
+        OV->>OV: log AUDIT {"action":"jwt_verify","result":"success"}
+    else token invalid
+        OV-->>WO: {"error":"token validation failed","detail":"..."}
+        OV->>OV: log AUDIT {"action":"jwt_verify","result":"failure"}
+    end
 ```
 
-### Kro + multicluster-runtime: the OIDC angle
+---
 
-The existing platform fan-out pattern (Kro RGD → GlobalWidget → RegionalWidgetRequest →
-binding-controller → Widget on spoke) already proves **resource orchestration** across
-clusters.  OIDC adds the **identity plane** on top:
+## Component Details
+
+### Dex IDP (Hub)
+
+Deployed via `chart/hub/templates/dex.yaml`:
+
+| Setting | Value |
+|---------|-------|
+| **Issuer** | `http://dex.monitoring.svc.cluster.local:5556/dex` (cluster-internal) or Tailscale Funnel URL (external) |
+| **Storage** | SQLite (`/var/dex/dex.db`) |
+| **OAuth2 flows** | authorization_code, implicit, password, client_credentials |
+| **Static clients** | `widget-controller`, `chainsaw-test-client`, infrastructure per-region clients, tenant clients |
+| **Password connector** | `mockPassword` (admin@example.com / admin) |
+
+**Infrastructure clients** (`chart/hub/values.yaml:16-33`): `us-spoke-controller`, `eu-spoke-controller`, `asia-spoke-controller` — each with `client_credentials` grant for the token-rotator's per-region authentication.
+
+**Tenant clients** (`chart/hub/values.yaml:37-52`): `acme-corp-us-controller` — workload-level Dex clients for tenant-scoped access.
+
+### OIDC Verifier (Spoke)
+
+Deployed via `chart/us/templates/oidc-verifier.yaml`:
+
+- **Endpoints**: `/healthz` (liveness), `/verify` (token validation)
+- **JWKS refresh**: Every 5 minutes in a background goroutine (`main.go:65-72`)
+- **Key types supported**: RSA (RS256/384/512) and EC (ES256/384/512, P-256/P-384/P-521)
+- **Trust bootstrapping**: Loads static JWKS from `--trust-jwks` file (mounted from ConfigMap `oidc-verifier-trust-jwks`)
+- **Key merge strategy** (`main.go:207-209`): Keys from Dex's JWKS are **merged** into the existing trust set; static keys are never removed
+
+### Structured Audit Trail
+
+All verification attempts emit structured JSON audit logs to stdout (`main.go:270-281`):
+
+```json
+AUDIT {"timestamp":"2026-07-11T18:23:39Z","action":"jwks_refresh","subject":"system","result":"success","detail":"loaded 1 keys","component":"oidc-verifier"}
+AUDIT {"timestamp":"2026-07-11T18:23:40Z","action":"jwt_verify","subject":"widget-controller","result":"success","detail":"token validated","component":"oidc-verifier"}
+```
+
+**Subject extraction** (`main.go:253-268`): Parses the JWT (unverified) to extract `sub` or `client_id` claim.
+
+**Log shipping**: The architecture originally planned to use `promtail` (DaemonSet) to ship oidc-verifier stdout audit logs to Loki. The current deployment uses `kubernetes-event-exporter` for Kubernetes event routing. Shipping oidc-verifier AUDIT logs directly to Loki is a planned enhancement — the promtail Helm values are defined at `deploy/platform-mvp/observability/promtail-values.yaml` but are currently disabled.
+
+---
+
+## Rotating Trust Integration
+
+The token-rotator couples with OIDC trust to create a **rotating credentials model**:
 
 ```mermaid
-graph LR
-    subgraph Platform["Platform Plane (hub)"]
-        KRO["Kro RGD<br/>resource composition"]
-        BC["binding-controller<br/>resource fan-out"]
-        DEX["Dex<br/>identity issuance"]
+sequenceDiagram
+    participant DEX as Dex (key rotation)
+    participant TR as Token Rotator
+    participant OV as OIDC Verifier
+    participant P as multicluster Provider
+
+    Note over DEX: Dex rotates signing keys
+    DEX->>DEX: JWKS updated with new kid
+
+    loop every 5m
+        OV->>DEX: GET /keys
+        DEX-->>OV: {keys: [old_key, new_key]}
+        OV->>OV: Merge new key into trust set
     end
 
-    subgraph App["Application (spoke)"]
-        OV["oidc-verifier<br/>identity validation"]
-        WO["widget-operator<br/>resource actuation"]
+    Note over TR: Rotation tick (every 5m)
+    TR->>DEX: POST /token (password grant)
+    DEX-->>TR: JWT signed with new key
+
+    TR->>TR: Write us-access-kubeconfig<br/>with new token
+
+    loop every 10s
+        P->>P: SHA256 detect change in kubeconfig
+        P->>P: Re-engage cluster with new creds
     end
-
-    KRO -->|"GlobalWidget →<br/>RegionalWidgetRequest"| BC
-    BC -->|"creates Widget<br/>(multicluster-runtime)"| WO
-    DEX -->|"signs JWT<br/>(client_credentials)"| OV
-    OV -->|"validates JWT<br/>returns claims"| WO
-
-    style KRO fill:#e3f2fd
-    style BC fill:#e3f2fd
-    style DEX fill:#fff3e0
-    style OV fill:#e8f5e9
-    style WO fill:#e8f5e9
 ```
 
-**Novelties**:
+See [Phase 7 — Token Rotator](07-token-rotator.md) for the full rotation lifecycle.
 
-1. **Workload identity without kubeconfigs.** The `client_credentials` grant lets
-   workloads authenticate as `widget-controller` using a client secret (or
-   eventually a signed assertion), not a kubeconfig file. This is how service
-   accounts work in cloud-native OIDC — no cluster-admin needed.
+---
 
-2. **Cross-cluster trust is JWKS-based.** The spoke's oidc-verifier doesn't need
-   shared secrets or VPN to trust the hub. It polls the public JWKS endpoint
-   every 5 minutes. If the hub rotates signing keys, the spoke picks them up
-   automatically.
+## Novelties
 
-3. **Audit trail in logs.** Every verification attempt — success or failure —
-   emits a structured `AUDIT` log line to stdout. promtail ships that to Loki,
-   and Grafana can query it. This is the foundation for compliance dashboards.
+| Property | Mechanism |
+|----------|-----------|
+| **Workload identity without kubeconfigs** | Dex-issued JWTs serve as application credentials; oidc-verifier validates them without static certs |
+| **JWKS-based cross-cluster trust** | Spoke trusts hub's identity provider by polling its public key endpoint — no secret sharing |
+| **Structured audit trail** | Every JWT verification attempt is logged as structured JSON → queryable via Loki → Grafana |
+| **Declarative trust composition** | Trust keys are expressed as ConfigMap resources; new trust anchors added without code changes |
+| **Rotating credentials** | Token-rotator + multiplexed provider ensures kubeconfig tokens are ephemeral; no restarts needed |
 
-4. **Kro composes resources, OIDC composes trust.** Kro lets you define
-   `GlobalWidget → RegionalWidgetRequest` as a templated expansion. OIDC lets you
-   define `Dex Client → JWT → oidc-verifier` as a trust chain. Both follow the
-   same declarative pattern: define the intent, let the runtime handle it.
+---
 
-### Possibilities with multi-cluster OIDC runtime
+## Testing
 
-| Pattern | How it works | Demo-ready |
-|---------|-------------|------------|
-| **API keys as workload identities** | Dex static client → `client_credentials` → JWT (already implemented) | Yes |
-| **User authentication** | Dex mockPassword connector → auth code flow → id_token | Yes (chainsaw-test-client) |
-| **Token exchange across regions** | Hub Dex is the single issuer; every spoke verifies the same JWKS endpoint | Yes |
-| **Key rotation** | Dex rotates signing keys; oidc-verifier auto-refreshes JWKS every 5 minutes | Yes |
-| **Federated identity** | Dex supports upstream connectors (GitHub, LDAP, OIDC providers) — swap `mockPassword` for a real connector | Extendable |
-| **mTLS + JWT dual auth** | nginx ingress already has TLS (cert-manager); add client-cert verification as a second authentication layer | Extendable |
-| **Per-workload RBAC on spoke** | oidc-verifier returns verified claims; spoke operators can use `sub`/`client_id` for authorization decisions | Extendable |
-| **Audit dashboards** | All oidc-verifier AUDIT logs flow to Loki; build a Grafana dashboard showing authentication trends | Extendable |
+| Test | What It Validates |
+|------|-------------------|
+| `10-oidc-trust` | Dex deployment healthy; OIDC discovery endpoint; JWT issuance; JWKS endpoint; oidc-verifier running; cross-cluster JWT verification; AUDIT trail present (7 steps) |
+| `11-rotating-trust` | Dex `trust-jwks` ConfigMap present on spoke; oidc-verifier mounts trust keys; keys can be rotated declaratively |
 
-## Implementation details
+## Key Files
 
-### Dex (hub)
-
-- **Image**: `ghcr.io/dexidp/dex:v2.42.0`
-- **Storage**: SQLite (`/var/dex/dex.db` in an emptyDir volume)
-- **Static clients**:
-  - `widget-controller` (confidential, client_credentials grant) — workload identity
-  - `chainsaw-test-client` (public, auth code grant) — test harness
-- **Connector**: mockPassword (`admin@example.com` / `admin`)
-- **Ingress**: `dex-ingress` with TLS certificate from cert-manager
-- **OIDC discovery**: `/.well-known/openid-configuration` at the Dex service root
-
-### oidc-verifier (spoke)
-
-- **Language**: Go, `golang-jwt/jwt/v5`
-- **Endpoints**:
-  - `GET /healthz` — returns `{"status":"ok"}` if JWKS is loaded
-  - `GET /verify` — validates `Authorization: Bearer {jwt}`, returns `{status, claims}`
-- **JWKS refresh**: On startup, then every 5 minutes
-- **Supported algorithms**: RS256, RS384, RS512, ES256, ES384, ES512
-- **Verification steps**:
-  1. Extract `kid` from JWT header
-  2. Look up public key in cached JWKS (keyed by `kid`)
-  3. Verify cryptographic signature
-  4. Validate `iss` (must match Dex issuer), `exp`, `aud` (if configured)
-- **Audit logging**: Structured JSON to stdout, formatted as `AUDIT {…}`
-- **Deployment**: 1 replica, 10m CPU / 16Mi RAM, ClusterIP service on :8080
-
-### cert-manager
-
-- **Version**: v1.17.1
-- **ClusterIssuer**: `selfsigned-issuer` (self-signed, for local dev)
-- **Certificates**: `dex-tls` and `grafana-tls`, stored as Kubernetes TLS secrets
-
-### Chainsaw test-10 (`10-oidc-trust`)
-
-7 steps executed from the hub cluster CronJob:
-
-| Step | Action | Cluster | Verifies |
-|------|--------|---------|----------|
-| 1 | Assert Dex Deployment Ready | hub | Dex is running |
-| 2 | curl OIDC discovery | hub | `/.well-known/openid-configuration` returns issuer, token_endpoint, jwks_uri |
-| 3 | curl `/dex/token` with client_credentials | hub | Dex issues a valid JWT access_token |
-| 4 | curl `/dex/keys` | hub | JWKS endpoint returns signing keys |
-| 5 | Assert oidc-verifier Deployment Ready | us | Verifier is running on spoke |
-| 6 | curl oidc-verifier `/verify` with hub JWT | us | Cross-cluster OIDC trust confirmed |
-| 7 | Query Loki for `AUDIT` logs | hub | Audit trail persisted and queryable |
-
-## How to deploy
-
-```bash
-# Full deploy (includes cert-manager CRDs, Dex, oidc-verifier)
-make deploy
-make validate
-```
-
-Or step by step:
-
-```bash
-make deploy-us        # widget-operator + oidc-verifier on spoke
-make deploy-hub       # LGTM + cert-manager + Dex + binding-controller on hub
-make validate         # runs all Chainsaw tests including test-10
-```
-
-## Makefile targets
-
-| Target | Description |
-|--------|-------------|
-| `make oidc-verifier-image` | Build + load oidc-verifier into kind-us |
-| `make test-ov` | Run oidc-verifier unit tests |
-| `make deploy` | Includes `oidc-verifier-image` as dep of `deploy-us` |
-
-## Files
-
-| Path | Purpose |
+| File | Purpose |
 |------|---------|
-| `platform-mvp/oidc-verifier/main.go` | Go service: JWKS polling, JWT verification, audit logging |
-| `platform-mvp/oidc-verifier/go.mod` | Go module (`golang-jwt/jwt/v5`) |
-| `platform-mvp/oidc-verifier/Dockerfile` | Multi-stage build (repo-root build context) |
-| `deploy/platform-mvp/chart/hub/templates/dex.yaml` | Dex Deployment, ConfigMap, Service, RBAC |
-| `deploy/platform-mvp/chart/hub/templates/dex-ingress.yaml` | Dex ingress with TLS |
-| `deploy/platform-mvp/chart/hub/templates/cert-manager.yaml` | ClusterIssuer + Certificate resources |
-| `deploy/platform-mvp/chart/us/templates/oidc-verifier.yaml` | oidc-verifier Deployment + Service |
-| `deploy/platform-mvp/chart/us/values.yaml` | `oidcVerifier` config block |
-| `deploy/platform-mvp/chart/hub/values.yaml` | `dex` config block, `cert-manager.enabled` |
-| `tests/e2e/tests/10-oidc-trust/chainsaw-test.yaml` | Declarative E2E test |
-| `deploy/platform-mvp/chart/hub/templates/chainsaw-tests.yaml` | CronJob ConfigMap (includes test-10) |
-
-## Acceptance
-
-- `make validate` passes — test-10 completes all 7 steps
-- oidc-verifier stdout shows `AUDIT {"action":"jwt_verify","subject":"widget-controller","result":"success",...}`
-- Grafana → Loki datasource → query `{app="oidc-verifier"} |= "AUDIT"` returns log entries
+| `chart/hub/templates/dex.yaml` | Dex Deployment + ConfigMap + RBAC + Service (180 lines) |
+| `platform-mvp/oidc-verifier/main.go` | OIDC verifier: JWKS polling, JWT validation, audit logging |
+| `chart/us/templates/oidc-verifier.yaml` | oidc-verifier Deployment on spoke |
+| `chart/hub/templates/cert-manager.yaml` | Self-signed ClusterIssuer for TLS |
+| `chart/hub/templates/dex-ingress.yaml` | Dex ingress (TLS via cert-manager) |
+| `deploy/platform-mvp/observability/promtail-values.yaml` | Promtail config (for future log shipping) |
+| `tests/e2e/tests/10-oidc-trust/chainsaw-test.yaml` | OIDC trust E2E test (7 steps) |
+| `tests/e2e/tests/11-rotating-trust/chainsaw-test.yaml` | Rotating trust E2E test |
