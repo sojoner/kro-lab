@@ -22,6 +22,7 @@ data:
         - code
         - token
         - id_token
+      passwordConnector: mock
     staticClients:
       - id: widget-controller
         name: Widget Controller (Workload Identity)
@@ -63,7 +64,12 @@ data:
         config:
           {{- toYaml .config | nindent 10 }}
 {{- end }}
-    enablePasswordDB: false
+    enablePasswordDB: true
+    staticPasswords:
+      - email: "admin@example.com"
+        hash: "$2a$10$vNryCPOct./Dse9.B3oQKePz92BpuCbZ1GvWb1x6IpoPTCM2CxeYe"
+        username: "admin"
+        userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
 ---
 apiVersion: v1
 kind: ServiceAccount

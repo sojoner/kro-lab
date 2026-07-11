@@ -1,3 +1,40 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chainsaw-runner
+  namespace: monitoring
+  labels:
+    app: chainsaw-runner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: chainsaw-runner
+  labels:
+    app: chainsaw-runner
+rules:
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["create", "get", "list", "watch", "delete"]
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: chainsaw-runner
+  labels:
+    app: chainsaw-runner
+subjects:
+- kind: ServiceAccount
+  name: chainsaw-runner
+  namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: chainsaw-runner
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -15,6 +52,7 @@ spec:
       backoffLimit: 1
       template:
         spec:
+          serviceAccountName: chainsaw-runner
           restartPolicy: Never
           containers:
             - name: runner

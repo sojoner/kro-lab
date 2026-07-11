@@ -1,20 +1,72 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CHAINSAW_DIR="${CHAINSAW_DIR:-/tests}"
+BUNDLED_DIR="${BUNDLED_DIR:-/tests-bundled}"
+CONFIGMAP_DIR="${CONFIGMAP_DIR:-/tests}"
 LOKI_URL="${LOKI_URL:-http://loki.monitoring:3100}"
 KUBECONFIG_HUB="${KUBECONFIG_HUB:-/kubeconfig/hub}"
 KUBECONFIG_US="${KUBECONFIG_US:-/kubeconfig/us}"
 
 echo "==> Starting chainsaw test run at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-cp "${KUBECONFIG_HUB}" "${CHAINSAW_DIR}/kubeconfig-hub"
-cp "${KUBECONFIG_US}"  "${CHAINSAW_DIR}/kubeconfig-us-internal"
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
+mkdir -p "${WORKDIR}/tests"
 
-REPORT_FILE="${CHAINSAW_DIR}/chainsaw-report.json"
+# Prefer bundled tests (image), fallback to ConfigMap
+if [ -d "${BUNDLED_DIR}" ] && [ "$(ls -A "${BUNDLED_DIR}" 2>/dev/null)" ]; then
+    echo "==> Using bundled tests from ${BUNDLED_DIR}"
+    cp -r "${BUNDLED_DIR}"/* "${WORKDIR}/tests/"
+elif [ -d "${CONFIGMAP_DIR}" ]; then
+    echo "==> Using ConfigMap tests from ${CONFIGMAP_DIR}"
+    for f in "${CONFIGMAP_DIR}"/*.yaml; do
+        [ -f "$f" ] || continue
+        base=$(basename "$f")
+        name="${base%.yaml}"
+        case "$name" in .chainsaw) continue ;; esac
+        mkdir -p "${WORKDIR}/tests/${name}"
+        sed -e '/^[[:space:]]*count:/d' "$f" > "${WORKDIR}/tests/${name}/chainsaw-test.yaml"
+    done
+else
+    echo "ERROR: no test files found"
+    exit 1
+fi
+
+cp "${KUBECONFIG_HUB}" "${WORKDIR}/kubeconfig-hub"
+cp "${KUBECONFIG_US}"  "${WORKDIR}/kubeconfig-us-internal"
+
+cat > "${WORKDIR}/tests/.chainsaw.yaml" <<EOF
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Configuration
+metadata:
+  name: platform-mvp
+spec:
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    delete: 30s
+    error: 10s
+    exec: 5m
+  failFast: false
+  parallel: 1
+  skipDelete: false
+  reportFormat: JSON
+  reportName: chainsaw-report
+  fullName: true
+  clusters:
+    hub:
+      kubeconfig: ${WORKDIR}/kubeconfig-hub
+    us:
+      kubeconfig: ${WORKDIR}/kubeconfig-us-internal
+EOF
+
+REPORT_FILE="${WORKDIR}/tests/chainsaw-report.json"
 START_NS=$(date +%s%N)
 
-if chainsaw test "${CHAINSAW_DIR}" --report-format JSON --report-name chainsaw-report 2>&1; then
+if chainsaw test "${WORKDIR}/tests" \
+    --report-format JSON \
+    --report-name chainsaw-report 2>&1; then
     RESULT="pass"
     EXIT_CODE=0
 else
@@ -27,8 +79,8 @@ DURATION_MS=$(((END_NS - START_NS) / 1000000))
 
 TIMESTAMP=$(date -u +%s%N)
 
-if [ -f "${CHAINSAW_DIR}/chainsaw-report.json" ]; then
-    REPORT_JSON=$(jq -c . "${CHAINSAW_DIR}/chainsaw-report.json" 2>/dev/null || echo '{}')
+if [ -f "${WORKDIR}/tests/chainsaw-report.json" ]; then
+    REPORT_JSON=$(jq -c . "${WORKDIR}/tests/chainsaw-report.json" 2>/dev/null || echo '{}')
 else
     REPORT_JSON='{"error":"report not found"}'
 fi

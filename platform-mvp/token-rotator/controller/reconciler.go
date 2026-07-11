@@ -51,11 +51,13 @@ type tokenResponse struct {
 type TokenRotatorReconciler struct {
 	hubClient client.Client
 
-	dexIssuer             string
-	dexClientID           string
-	dexClientSecret       string
-	dexClientIDTemplate   string
-	newHTTPClient         func() *http.Client
+	dexIssuer              string
+	dexClientID            string
+	dexClientSecret        string
+	dexUsername            string
+	dexPassword            string
+	dexClientIDTemplate    string
+	newHTTPClient          func() *http.Client
 	kubeconfigSecretSuffix string
 }
 
@@ -63,6 +65,8 @@ type TokenRotatorOptions struct {
 	DexIssuer              string
 	DexClientID            string
 	DexClientSecret        string
+	DexUsername            string
+	DexPassword            string
 	DexClientIDTemplate    string
 	KubeconfigSecretSuffix string
 }
@@ -80,6 +84,8 @@ func SetupRotatorWithManager(mgr manager.Manager, opts TokenRotatorOptions) erro
 		dexIssuer:              opts.DexIssuer,
 		dexClientID:            opts.DexClientID,
 		dexClientSecret:        opts.DexClientSecret,
+		dexUsername:            opts.DexUsername,
+		dexPassword:            opts.DexPassword,
 		dexClientIDTemplate:    opts.DexClientIDTemplate,
 		newHTTPClient:          func() *http.Client { return http.DefaultClient },
 		kubeconfigSecretSuffix: suffix,
@@ -189,9 +195,9 @@ func (r *TokenRotatorReconciler) fetchToken(clientID string) (string, error) {
 	tokenURL := strings.TrimRight(r.dexIssuer, "/") + "/token"
 
 	form := url.Values{}
-	form.Set("grant_type", "client_credentials")
-	form.Set("client_id", clientID)
-	form.Set("client_secret", r.dexClientSecret)
+	form.Set("grant_type", "password")
+	form.Set("username", r.dexUsername)
+	form.Set("password", r.dexPassword)
 	form.Set("scope", "openid")
 
 	httpReq, err := http.NewRequest("POST", tokenURL, bytes.NewReader([]byte(form.Encode())))
@@ -199,6 +205,7 @@ func (r *TokenRotatorReconciler) fetchToken(clientID string) (string, error) {
 		return "", fmt.Errorf("building token request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	httpReq.SetBasicAuth(clientID, r.dexClientSecret)
 
 	resp, err := r.newHTTPClient().Do(httpReq)
 	if err != nil {

@@ -24,6 +24,8 @@ func main() {
 	metricsAddr := flag.String("metrics-bind-address", ":8080", "Address for metrics endpoint")
 	dexIssuer := flag.String("dex-issuer", "https://dex.monitoring.svc:5556/dex", "Dex issuer URL")
 	dexClientSecret := flag.String("dex-client-secret", "", "Dex client secret")
+	dexUsername := flag.String("dex-username", "admin@example.com", "Dex user for password grant")
+	dexPassword := flag.String("dex-password", "admin", "Dex password for password grant")
 	kubeconfigSuffix := flag.String("kubeconfig-secret-suffix", "-access-kubeconfig", "Suffix for kubeconfig Secret names")
 	flag.Parse()
 
@@ -58,6 +60,8 @@ func main() {
 	if err := controller.SetupRotatorWithManager(mgr, controller.TokenRotatorOptions{
 		DexIssuer:              *dexIssuer,
 		DexClientSecret:        *dexClientSecret,
+		DexUsername:            *dexUsername,
+		DexPassword:            *dexPassword,
 		DexClientIDTemplate:    "{region}-spoke-controller",
 		KubeconfigSecretSuffix: *kubeconfigSuffix,
 	}); err != nil {

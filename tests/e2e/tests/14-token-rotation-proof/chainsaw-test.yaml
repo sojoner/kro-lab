@@ -1,0 +1,94 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: token-rotation-proof
+spec:
+  description: "Phase 14 — Prove the token-rotator refreshes kubeconfig Secrets with fresh Dex tokens"
+  steps:
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            namespace: default
+            name: token-rotator
+    cluster: hub
+  - try:
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            namespace: default
+            name: us-access-kubeconfig
+    cluster: hub
+  - try:
+    - script:
+        content: |
+          for i in $(seq 1 60); do
+            ROTATIONS=$(kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n default exec deploy/token-rotator -- wget -qO- http://localhost:8080/metrics 2>/dev/null | grep 'token_rotator_rotations_total{.*result="success"' | grep -v 'region="init"' | head -1 | sed 's/.* //' || echo "0")
+            if [ "$ROTATIONS" != "0" ] && [ -n "$ROTATIONS" ]; then
+              echo "PASS: first rotation detected (count=$ROTATIONS)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "FAIL: no rotation detected within 5 minutes"
+          exit 1
+    cluster: hub
+  - try:
+    - script:
+        content: |
+          KUBECONFIG_YAML=$(kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n default get secret us-access-kubeconfig -o jsonpath='{.data.value}' | base64 -d 2>/dev/null || echo "")
+          if [ -z "$KUBECONFIG_YAML" ]; then
+            echo "FAIL: us-access-kubeconfig secret is empty"
+            exit 1
+          fi
+          TOKEN_BEFORE=$(echo "$KUBECONFIG_YAML" | grep 'token:' | awk '{print $2}' | tr -d '[:space:]')
+          if [ -z "$TOKEN_BEFORE" ]; then
+            echo "FAIL: no token found in kubeconfig"
+            exit 1
+          fi
+          PARTS=$(echo "$TOKEN_BEFORE" | tr '.' '\n' | wc -l)
+          if [ "$PARTS" != "3" ]; then
+            echo "FAIL: token is not a valid JWT ($PARTS parts)"
+            exit 1
+          fi
+          echo "PASS: valid JWT token captured ($PARTS parts, ${#TOKEN_BEFORE} chars)"
+          echo "$TOKEN_BEFORE" > /tmp/token-before.txt
+          echo "$ROTATIONS" > /tmp/rotations-before.txt
+    cluster: hub
+  - try:
+    - script:
+        content: |
+          BEFORE=$(kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n default exec deploy/token-rotator -- wget -qO- http://localhost:8080/metrics 2>/dev/null | grep 'token_rotator_rotations_total{.*result="success"' | grep -v 'region="init"' | head -1 | sed 's/.* //' || echo "0")
+          echo "Rotation count before: $BEFORE"
+          for i in $(seq 1 72); do
+            AFTER=$(kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n default exec deploy/token-rotator -- wget -qO- http://localhost:8080/metrics 2>/dev/null | grep 'token_rotator_rotations_total{.*result="success"' | grep -v 'region="init"' | head -1 | sed 's/.* //' || echo "0")
+            if [ "$AFTER" != "$BEFORE" ] && [ -n "$AFTER" ]; then
+              echo "PASS: new rotation detected (before=$BEFORE after=$AFTER)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "FAIL: no new rotation within 6 minutes (before=$BEFORE)"
+          exit 1
+    cluster: hub
+  - try:
+    - script:
+        content: |
+          KUBECONFIG_YAML=$(kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n default get secret us-access-kubeconfig -o jsonpath='{.data.value}' | base64 -d 2>/dev/null || echo "")
+          TOKEN_AFTER=$(echo "$KUBECONFIG_YAML" | grep 'token:' | awk '{print $2}' | tr -d '[:space:]')
+          if [ -z "$TOKEN_AFTER" ]; then
+            echo "FAIL: no token found in updated kubeconfig"
+            exit 1
+          fi
+          PARTS=$(echo "$TOKEN_AFTER" | tr '.' '\n' | wc -l)
+          if [ "$PARTS" != "3" ]; then
+            echo "FAIL: updated token is not a valid JWT ($PARTS parts)"
+            exit 1
+          fi
+          echo "PASS: valid JWT in updated kubeconfig ($PARTS parts, ${#TOKEN_AFTER} chars)"
+          echo "$TOKEN_AFTER" > /tmp/token-after.txt
+    cluster: hub

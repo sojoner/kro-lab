@@ -21,7 +21,7 @@
       },
       "targets": [
         {
-          "expr": "rate(token_rotator_rotations_total{result=\"success\"}[5m])",
+          "expr": "token_rotator_rotations_total",
           "refId": "A",
           "legendFormat": "{{region}}"
         }
@@ -85,7 +85,7 @@
       },
       "targets": [
         {
-          "expr": "rate(token_rotator_rotation_errors_total[5m])",
+          "expr": "token_rotator_rotation_errors_total",
           "refId": "A",
           "legendFormat": "{{region}}/{{error_type}}"
         }

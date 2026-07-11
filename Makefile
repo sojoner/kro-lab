@@ -381,7 +381,7 @@ verify-all:
 # ── Chainsaw runner ──────────────────────────────────────────────────────────
 .PHONY: chainsaw-runner
 chainsaw-runner:
-	docker build -t chainsaw-runner:local -f $(CHAINSAW_RUNNER_DIR)/Dockerfile.chainsaw-runner $(CHAINSAW_RUNNER_DIR)
+	docker build -t chainsaw-runner:local -f $(CHAINSAW_RUNNER_DIR)/Dockerfile.chainsaw-runner .
 	kind load docker-image chainsaw-runner:local --name $(KIND_HUB)
 	@echo "  Setting up kubeconfig secrets for CronJob..."
 	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) delete secret kubeconfigs --ignore-not-found

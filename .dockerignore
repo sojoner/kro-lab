@@ -19,13 +19,14 @@ docs/
 
 # Test artifacts
 tests/
+!tests/e2e/tests/
 *.test
 *.out
 coverage*.out
 
 # CI / deploy artifacts (not needed for Go builds)
 deploy/
-kubeconfig-*
+!deploy/platform-mvp/observability/
 *.kubeconfig
 hack/
 

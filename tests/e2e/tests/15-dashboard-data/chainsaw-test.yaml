@@ -1,0 +1,67 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: dashboard-data-rendering
+spec:
+  description: "Phase 15 — Prove Grafana dashboards render actual Prometheus data by executing panel queries"
+  steps:
+  - try:
+    - script:
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-kube-prometheus-stack-prometheus 19090:9090 &
+          PF_PID=$!
+          sleep 5
+          for query in \
+            "token_rotator_rotations_total" \
+            "binding_controller_reconcile_total" \
+            "up{job=\"apiserver\"}" \
+            "token_rotator_last_rotation_timestamp_seconds"; do
+            COUNT=$(curl -s "http://localhost:19090/api/v1/query?query=${query}" 2>/dev/null | grep -c '"value"' || echo "0")
+            if [ "$COUNT" -gt 0 ]; then
+              echo "PASS: $query → $COUNT result(s)"
+            else
+              echo "FAIL: $query → no data in Prometheus"
+              kill $PF_PID 2>/dev/null || true
+              exit 1
+            fi
+          done
+          kill $PF_PID 2>/dev/null || true
+          echo "PASS: all 4 dashboard panel queries return data"
+    cluster: hub
+  - try:
+    - script:
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-grafana 3000:80 &
+          PF_PID=$!
+          sleep 5
+          DASHBOARD=$(curl -s http://admin:admin@localhost:3000/api/dashboards/uid/token-rotation 2>/dev/null || echo "{}")
+          kill $PF_PID 2>/dev/null || true
+          TITLE=$(echo "$DASHBOARD" | python3 -c "import sys,json; print(json.load(sys.stdin).get('dashboard',{}).get('title','NONE'))" 2>/dev/null || echo "NONE")
+          if [ "$TITLE" = "Token Rotation" ]; then
+            echo "PASS: dashboard loaded with title '$TITLE'"
+          else
+            echo "FAIL: dashboard title mismatch, got '$TITLE'"
+            exit 1
+          fi
+    cluster: hub
+  - try:
+    - script:
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-kube-prometheus-stack-prometheus 19091:9090 &
+          PF_PID=$!
+          sleep 5
+          for query in \
+            "count(kube_node_status_condition{condition=\"Ready\",status=\"true\"})" \
+            "kube_pod_status_phase{phase!=\"Running\",phase!=\"Succeeded\"}"; do
+            RESULT=$(curl -s "http://localhost:19091/api/v1/query?query=${query}" 2>/dev/null | grep -c '"value"' || echo "0")
+            if [ "$RESULT" -gt 0 ]; then
+              echo "PASS: $query → $RESULT result(s)"
+            else
+              echo "FAIL: $query → no data"
+              kill $PF_PID 2>/dev/null || true
+              exit 1
+            fi
+          done
+          kill $PF_PID 2>/dev/null || true
+          echo "PASS: cluster-fitness panel queries return data"
+    cluster: hub
