@@ -54,6 +54,9 @@ spec:
   reportFormat: JSON
   reportName: chainsaw-report
   fullName: true
+EOF
+
+cat >> "${WORKDIR}/tests/.chainsaw.yaml" <<EOF
   clusters:
     hub:
       kubeconfig: ${WORKDIR}/kubeconfig-hub
@@ -65,6 +68,7 @@ REPORT_FILE="${WORKDIR}/tests/chainsaw-report.json"
 START_NS=$(date +%s%N)
 
 if chainsaw test "${WORKDIR}/tests" \
+    --config "${WORKDIR}/tests/.chainsaw.yaml" \
     --report-format JSON \
     --report-name chainsaw-report 2>&1; then
     RESULT="pass"
