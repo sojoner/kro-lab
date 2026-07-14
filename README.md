@@ -10,6 +10,14 @@ all running locally on `kind`.
 A binding controller (multicluster-runtime) fans expanded intents out to a spoke
 cluster running a trivial widget-operator. No cloud dependency.
 
+## Why This Architecture
+
+The "widget" itself is a placeholder — what's being validated is the pattern underneath, and it's meant to hold up past a single kind demo:
+
+- **Scales out without code changes.** Adding a region is a `ClusterProfile` + kubeconfig Secret + spoke deployment. The hub-side logic (Kro RGD, binding-controller, provider) resolves cluster identity generically through `mgr.GetCluster(ctx, region)` — no per-region branches to write or maintain. See [`docs/platform-mvp/99-extending-to-eu-asia.md`](docs/platform-mvp/99-extending-to-eu-asia.md).
+- **Tenancy is data, not schema.** A tenant is a `platform.example.com/tenant` label value, not a CRD field or a per-tenant code path. Onboarding a tenant means adding a namespace + 3 RoleBindings (admin/developer/analyst) in `values.yaml`. See [`docs/platform-mvp/09-multi-tenancy.md`](docs/platform-mvp/09-multi-tenancy.md).
+- **Auth pattern: split identity, least privilege, fail closed.** Controllers authenticate with audience-bound, Kubelet-rotated projected ServiceAccount tokens — no static credentials to leak or rotate by hand. Humans authenticate separately via Dex OIDC. Each identity is authorized minimally (the controller's spoke RBAC is scoped to `widgets` only), the provider clears the fallback TLS cert so a missing token fails the request instead of silently escalating, and `ValidatingAdmissionPolicy` guardrails stop any non-admin identity — controller or human — from touching ClusterRoles or the auth config itself. See [`docs/platform-mvp/10-oidc-trust.md`](docs/platform-mvp/10-oidc-trust.md) and [`docs/design/oidc-trust-v2.md`](docs/design/oidc-trust-v2.md).
+
 ## Architecture
 
 ```

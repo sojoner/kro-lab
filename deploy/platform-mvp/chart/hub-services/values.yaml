@@ -27,5 +27,5 @@ bindingController:
   spokeTokens:
     - serviceAccountToken:
         path: us-token
-        audience: https://us-control-plane:6443
+        audience: homelab:us-spoke
         expirationSeconds: 3600

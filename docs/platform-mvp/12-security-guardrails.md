@@ -27,9 +27,11 @@ spec:
         resources: ["clusterroles", "clusterrolebindings"]
   validations:
     - expression: >
-        ('dex:platform-admin' in request.userInfo.groups)
+        ('system:masters' in request.userInfo.groups)
+        || ('kubeadm:cluster-admins' in request.userInfo.groups)
+        || ('dex:platform-admin' in request.userInfo.groups)
         || request.userInfo.username.startsWith('system:')
-      message: "Only platform-admins or system identities may manage ClusterRoles."
+      message: "Only platform-admins, system:masters, or system identities may manage ClusterRoles and ClusterRoleBindings."
 ```
 
 ### 2. protect-system-namespaces
@@ -56,9 +58,11 @@ spec:
           values: ["kube-system", "kube-public", "kube-node-lease"]
   validations:
     - expression: >
-        ('dex:platform-admin' in request.userInfo.groups)
+        ('system:masters' in request.userInfo.groups)
+        || ('kubeadm:cluster-admins' in request.userInfo.groups)
+        || ('dex:platform-admin' in request.userInfo.groups)
         || request.userInfo.username.startsWith('system:')
-      message: "Only platform-admins may modify resources in this namespace."
+      message: "Only platform-admins, system:masters, or system identities may modify resources in this namespace."
 ```
 
 ### 3. protect-auth-config
@@ -80,10 +84,14 @@ spec:
         resources: ["authenticationconfigurations"]
   validations:
     - expression: >
-        ('dex:platform-admin' in request.userInfo.groups)
+        ('system:masters' in request.userInfo.groups)
+        || ('kubeadm:cluster-admins' in request.userInfo.groups)
+        || ('dex:platform-admin' in request.userInfo.groups)
         || request.userInfo.username.startsWith('system:')
-      message: "Only platform-admins may modify AuthenticationConfiguration."
+      message: "Only platform-admins, system:masters, or system identities may modify AuthenticationConfiguration."
 ```
+
+`system:masters` and `kubeadm:cluster-admins` are included because kubeadm-provisioned clusters (kind included) authenticate the built-in cluster-admin client certificate into those groups — without this bypass, the policies would lock out the identity used to install and recover the guardrails themselves.
 
 ## Platform Admin RBAC
 
@@ -127,7 +135,7 @@ admissionPolicies:
 
 ## Bypassing
 
-In emergencies, the `failurePolicy` can be set to `Ignore` to allow all requests through. System identities (`system:*` usernames) and users in the `dex:platform-admin` group always bypass the policies.
+In emergencies, the `failurePolicy` can be set to `Ignore` to allow all requests through. System identities (`system:*` usernames), the `system:masters`/`kubeadm:cluster-admins` groups (cluster-admin certs), and users in the `dex:platform-admin` group always bypass the policies.
 
 ## Recovery
 

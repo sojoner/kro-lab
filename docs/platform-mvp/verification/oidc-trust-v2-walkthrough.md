@@ -22,7 +22,7 @@ projected ServiceAccount token issued by the hub's kube-apiserver.
 │      ┌──────────────────────────────────────────────────┐               │
 │      │ serviceAccountToken:                              │               │
 │      │   path: us-token                                  │               │
-│      │   audience: https://us-control-plane:6443         │               │
+│      │   audience: homelab:us-spoke                       │               │
 │      │   expirationSeconds: 3600                         │               │
 │      └──────────────────────────────────────────────────┘               │
 │                                                                         │
@@ -31,7 +31,7 @@ projected ServiceAccount token issued by the hub's kube-apiserver.
 │                                                                         │
 │  Token claims (decoded):                                                │
 │  {                                                                      │
-│    "aud": ["https://us-control-plane:6443"],                            │
+│    "aud": ["homelab:us-spoke"],                                          │
 │    "iss": "https://kubernetes.default.svc.cluster.local",               │
 │    "sub": "system:serviceaccount:default:binding-controller",           │
 │    "exp": 1752000000,                                                   │
@@ -74,7 +74,7 @@ projected ServiceAccount token issued by the hub's kube-apiserver.
 │  │   - issuer:                                                     │    │
 │  │       url: https://hub-control-plane:6443                       │    │
 │  │       audiences:                                                │    │
-│  │         - https://us-control-plane:6443                         │    │
+│  │         - homelab:us-spoke                                      │    │
 │  │       claimValidationRules:                                     │    │
 │  │         - expression: >                                         │    │
 │  │             claims.sub.startsWith(                              │    │
@@ -88,7 +88,7 @@ projected ServiceAccount token issued by the hub's kube-apiserver.
 │  2. Discover issuer: GET /.well-known/openid-configuration on hub       │
 │  3. Fetch signing keys: GET /openid/v1/jwks on hub                      │
 │  4. Verify JWT signature against hub's public key                       │
-│  5. Validate audience: https://us-control-plane:6443 ✓                  │
+│  5. Validate audience: homelab:us-spoke ✓                                │
 │  6. Validate issuer: https://hub-control-plane:6443 ✓                   │
 │  7. Run claimValidationRules: sub starts with "system:serviceaccount:default:" ✓│
 │  8. Map identity: username = hub:system:serviceaccount:default:...      │
@@ -100,16 +100,25 @@ projected ServiceAccount token issued by the hub's kube-apiserver.
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ Step 4: Authorization (Spoke RBAC)                                      │
 │                                                                         │
-│  ClusterRoleBinding (spoke-side, applied by flux):                      │
+│  ClusterRole + ClusterRoleBinding, both named "hub-binding-controller"  │
+│  (spoke-side, `chart/us/templates/binding-controller-rbac.yaml`):       │
 │  ┌────────────────────────────────────────────────────────────────┐    │
 │  │ apiVersion: rbac.authorization.k8s.io/v1                        │    │
+│  │ kind: ClusterRole                                                │    │
+│  │ metadata:                                                        │    │
+│  │   name: hub-binding-controller                                   │    │
+│  │ rules:                                                           │    │
+│  │   - apiGroups: ["platform.example.com"]                          │    │
+│  │     resources: ["widgets"]                                       │    │
+│  │     verbs: ["get","list","watch","create","update","patch"]      │    │
+│  │   - apiGroups: ["platform.example.com"]                          │    │
+│  │     resources: ["widgets/status"]                                │    │
+│  │     verbs: ["get","list","watch"]                                │    │
+│  │ ---                                                              │    │
 │  │ kind: ClusterRoleBinding                                         │    │
 │  │ metadata:                                                        │    │
-│  │   name: binding-controller-spoke                                 │    │
-│  │ roleRef:                                                         │    │
-│  │   apiGroup: rbac.authorization.k8s.io                            │    │
-│  │   kind: ClusterRole                                              │    │
-│  │   name: widget-controller                                        │    │
+│  │   name: hub-binding-controller                                   │    │
+│  │ roleRef: {kind: ClusterRole, name: hub-binding-controller}       │    │
 │  │ subjects:                                                        │    │
 │  │   - kind: User                                                   │    │
 │  │     name: hub:system:serviceaccount:default:binding-controller   │    │
@@ -231,4 +240,7 @@ chainsaw test tests/e2e/tests/18-admission-guardrails \
 | Trust boundary | Any valid Dex token | claimValidationRules restrict by namespace |
 | Identity for controller | oidc:admin | hub:system:serviceaccount:default:binding-controller |
 | Identity for admin | oidc:admin@example.com | dex:admin@example.com |
-| Guardrails for escalation | None | 3 ValidatingAdmissionPolicies |
+| Guardrails for escalation | None | 3 ValidatingAdmissionPolicies (`system:masters`/`kubeadm:cluster-admins`/`dex:platform-admin`/`system:*` bypass) |
+| Controller authorization on spoke | Implicit (kubeconfig cert = cluster-admin) | `ClusterRole hub-binding-controller` scoped to `widgets` only |
+| Token audience | Spoke API server URL | Logical name (`homelab:us-spoke`), decoupled from network address |
+| Missing token file | Silent fallback to kubeconfig client cert | Provider strips the cert — fails closed |

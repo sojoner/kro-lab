@@ -2,6 +2,14 @@
 
 > **v2 Trust Model** (feat/oidc-trust-v2): Controllers use projected ServiceAccount tokens with Kubelet rotation. Humans use Dex OIDC. Spoke uses AuthenticationConfiguration instead of legacy oidc-* flags. See [Phase 10](10-oidc-trust.md) and [design doc](../design/oidc-trust-v2.md).
 
+## Value Proposition
+
+Three properties make this more than a kind-cluster demo — they're the parts of the design meant to survive contact with a real fleet:
+
+1. **Scale-out orchestration without code changes.** A region is a `ClusterProfile` + kubeconfig Secret + spoke deployment — nothing else. The hub-side logic (Kro RGD, binding-controller, provider) resolves cluster identity generically through `mgr.GetCluster(ctx, region)`; it has no per-region branches to update. See [Phase 99](99-extending-to-eu-asia.md) for the concrete EU/ASIA walk-through.
+2. **Tenancy as data, not schema.** A tenant is a `platform.example.com/tenant` label value, not a field baked into the CRD or a per-tenant code path. Adding a tenant means adding a namespace + 3 RoleBindings (admin/developer/analyst) in `values.yaml` — the binding-controller and Kro RGD are unchanged. See [Phase 9](09-multi-tenancy.md).
+3. **Split identity, least privilege, fail closed.** Controllers and humans never share a credential path: controllers get audience-bound, Kubelet-rotated ServiceAccount tokens (no long-lived secrets to leak or rotate manually); humans get Dex OIDC. Each side is authorized separately and minimally — the controller's spoke RBAC is scoped to `widgets` only, and the provider clears the fallback TLS cert so a missing token fails the request instead of silently escalating. `ValidatingAdmissionPolicy` guardrails then stop *any* non-admin identity, controller or human, from touching ClusterRoles or the auth config itself. See [Phase 10](10-oidc-trust.md), [Phase 12](12-security-guardrails.md), and the [design doc](../design/oidc-trust-v2.md).
+
 ## Multi-Cluster Runtime
 
 The platform connects a central **hub** cluster to one or more satellite **spoke** clusters using the `sigs.k8s.io/multicluster-runtime` framework. The hub serves as the control plane for declarative multi-cluster workload orchestration through [Kro](https://github.com/kubernetes-sigs/kro) Resource Graph Definitions (RGDs).
@@ -88,15 +96,12 @@ sequenceDiagram
 
 ### Multi-Tenancy
 
-Multi-tenancy is implemented at the workload layer through the `tenant` field on `RegionalWidgetRequest` (`deploy/platform-mvp/chart/crds/templates/regionalwidgetrequest-crd.yaml:40-45`):
+Multi-tenancy is implemented at the workload layer through the `platform.example.com/tenant` label on `RegionalWidgetRequest` — deliberately a label, not a `spec` field. `RegionalWidgetRequest`'s schema (`deploy/platform-mvp/chart/crds/templates/regionalwidgetrequest-crd.yaml`) only defines `spec.region` and `spec.message`; there is no `spec.tenant`, and no per-tenant CRD change is needed to onboard a tenant:
 
 ```yaml
-labels:
-  type: object
-  properties:
-    platform.example.com/tenant:
-      type: string
-      description: Tenant identifier used as spoke-side namespace for workload isolation
+metadata:
+  labels:
+    platform.example.com/tenant: acme-corp
 ```
 
 **Flow:**

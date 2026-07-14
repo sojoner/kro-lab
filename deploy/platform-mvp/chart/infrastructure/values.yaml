@@ -156,12 +156,16 @@ loki:
     extraVolumes:
       - name: loki-tmp
         emptyDir: {}
+      - name: loki-data
+        emptyDir: {}
     extraVolumeMounts:
       - name: loki-tmp
         mountPath: /var/loki-tmp
+      - name: loki-data
+        mountPath: /var/loki
     resources:
       requests: { cpu: 50m, memory: 128Mi }
-      limits: { cpu: 200m, memory: 384Mi }
+      limits: { cpu: 500m, memory: 768Mi }
   backend:
     replicas: 0
   read:

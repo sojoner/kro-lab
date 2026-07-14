@@ -85,20 +85,97 @@ TIMESTAMP=$(date -u +%s%N)
 
 if [ -f "chainsaw-report.json" ]; then
     REPORT_JSON=$(jq -c . "chainsaw-report.json" 2>/dev/null || echo '{}')
+    REPORT_FILE="chainsaw-report.json"
 elif [ -f "${WORKDIR}/tests/chainsaw-report.json" ]; then
     REPORT_JSON=$(jq -c . "${WORKDIR}/tests/chainsaw-report.json" 2>/dev/null || echo '{}')
+    REPORT_FILE="${WORKDIR}/tests/chainsaw-report.json"
 else
     REPORT_JSON='{"error":"report not found"}'
+    REPORT_FILE=""
 fi
 
+# Push individual test case results first
+RUN_ID=$(date -u +%s)
+if [ -n "${REPORT_FILE}" ] && [ -f "${REPORT_FILE}" ]; then
+    jq -c '.tests[]' "${REPORT_FILE}" 2>/dev/null | while read -r test; do
+        TEST_NAME=$(echo "$test" | jq -r '.name // "unknown"')
+        TEST_BASE=$(echo "$test" | jq -r '.basePath // .name // "unknown"')
+        TEST_STATUS=$(echo "$test" | jq -r '.status // "skipped"')
+        TEST_START=$(echo "$test" | jq -r '.startTime // ""')
+        TEST_END=$(echo "$test" | jq -r '.endTime // ""')
+        STEP_COUNT=$(echo "$test" | jq '.steps | length // 0')
+
+        if [ -n "$TEST_START" ] && [ -n "$TEST_END" ]; then
+            START_EPOCH=$(date -d "$TEST_START" +%s%N 2>/dev/null || echo 0)
+            END_EPOCH=$(date -d "$TEST_END" +%s%N 2>/dev/null || echo 0)
+            if [ "$START_EPOCH" != "0" ] && [ "$END_EPOCH" != "0" ]; then
+                TEST_DURATION=$(((END_EPOCH - START_EPOCH) / 1000000))
+            else
+                TEST_DURATION=0
+            fi
+        else
+            TEST_DURATION=0
+        fi
+
+        TEST_ENTRY=$(jq -n \
+            --arg name "$TEST_NAME" \
+            --arg base "$TEST_BASE" \
+            --arg status "$TEST_STATUS" \
+            --arg duration "$TEST_DURATION" \
+            --arg steps "$STEP_COUNT" \
+            --arg run_id "$RUN_ID" \
+            '{
+                kind: "test_case",
+                test_name: $name,
+                base_path: $base,
+                status: $status,
+                duration_ms: $duration | tonumber,
+                steps: $steps | tonumber,
+                run_id: $run_id
+            }')
+
+        curl -s -o /dev/null \
+            -H "Content-Type: application/json" \
+            -X POST "${LOKI_URL}/loki/api/v1/push" \
+            -d "$(jq -n \
+                --arg ts "${TIMESTAMP}" \
+                --argjson entry "${TEST_ENTRY}" \
+                '{
+                    streams: [{
+                        stream: { job: "chainsaw-runner", kind: "test_case" },
+                        values: [[$ts, ($entry | tostring)]]
+                    }]
+                }')" 2>/dev/null || true
+    done
+
+    # Compute pass/fail counts from report
+    COUNTS=$(jq -r '
+        [.tests[].status] |
+        {
+            passed: (map(select(. == "passed")) | length),
+            failed: (map(select(. == "failed")) | length),
+            total: length
+        }' "${REPORT_FILE}")
+    PASSED_COUNT=$(echo "$COUNTS" | jq '.passed')
+    FAILED_COUNT=$(echo "$COUNTS" | jq '.failed')
+    TOTAL_COUNT=$(echo "$COUNTS" | jq '.total')
+fi
+
+# Push summary entry with counts
 LOG_ENTRY=$(jq -n \
     --arg result "${RESULT}" \
     --arg duration "${DURATION_MS}" \
     --argjson report "${REPORT_JSON}" \
+    --argjson passed "${PASSED_COUNT:-0}" \
+    --argjson failed "${FAILED_COUNT:-0}" \
+    --argjson total "${TOTAL_COUNT:-0}" \
     '{
-        test_run: true,
+        kind: "summary",
         result: $result,
         duration_ms: $duration | tonumber,
+        passed: $passed,
+        failed: $failed,
+        total: $total,
         report: $report
     }')
 
@@ -110,7 +187,7 @@ curl -s -o /dev/null -w "%{http_code}" \
         --argjson entry "${LOG_ENTRY}" \
         '{
             streams: [{
-                stream: { job: "chainsaw-runner" },
+                stream: { job: "chainsaw-runner", kind: "summary" },
                 values: [[$ts, ($entry | tostring)]]
             }]
         }')" || true

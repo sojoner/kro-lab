@@ -15,10 +15,10 @@ authConfiguration:
   hubIssuer:
     enabled: true
     url: "https://hub-control-plane:6443"
-    audience: "https://us-control-plane:6443"
+    audience: "homelab:us-spoke"
     claimValidationRules:
-      - expression: 'claims.sub.startsWith("system:serviceaccount:")'
-        message: "Only ServiceAccounts from the hub cluster may authenticate."
+      - expression: 'claims.sub.startsWith("system:serviceaccount:default:")'
+        message: "Only ServiceAccounts from the default namespace on the hub may authenticate."
     claimMappings:
       username:
         claim: sub
@@ -69,6 +69,10 @@ admissionPolicies:
     - kind: Group
       name: dex:platform-admin
   additionalProtectedNamespaces: []
+
+bindingControllerRBAC:
+  enabled: true
+  hubIdentity: "hub:system:serviceaccount:default:binding-controller"
 
 tenants:
   - id: acme-corp

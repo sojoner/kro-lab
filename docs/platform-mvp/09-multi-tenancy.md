@@ -150,7 +150,8 @@ Platform-wide, a `dex:platform-admin` group (user `admin@example.com`) has clust
 | **Network isolation** | Kind doesn't support NetworkPolicy, but namespaces provide logical separation |
 | **RBAC isolation** | Per-tenant namespace with 3-tier role bindings (admin/dev/analyst); no cluster-wide Widget access |
 | **Audit separation** | Widgets carry `platform.example.com/tenant` label on the RWR; event-exporter captures per-namespace events |
-| **Admission policies** | ValidatingAdmissionPolicies on the spoke restrict ClusterRole management to `dex:platform-admin`; enabled by default |
+| **Admission policies** | ValidatingAdmissionPolicies on the spoke restrict ClusterRole management to `dex:platform-admin` (plus `system:masters`/`kubeadm:cluster-admins`/`system:*` cluster-admin identities); enabled by default |
+| **Controller least-privilege** | Binding-controller's cross-tenant identity is authorized only for `widgets`/`widgets/status` via `hub-binding-controller` ClusterRole — it cannot read/write tenant RBAC or any other resource |
 
 ## Testing
 

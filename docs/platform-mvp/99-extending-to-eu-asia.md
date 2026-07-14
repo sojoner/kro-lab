@@ -73,11 +73,11 @@ apiVersion: platform.example.com/v1alpha1
 kind: GlobalWidget
 metadata:
   name: acme-global
+  labels:
+    platform.example.com/tenant: acme-corp
 spec:
   regions: [us, eu, asia]
   message: "ACME global workload"
-  tenant:
-    id: acme-corp
 ```
 
 This creates Widgets in `acme-corp` namespace on all three spokes — tenant isolation works identically across all regions.

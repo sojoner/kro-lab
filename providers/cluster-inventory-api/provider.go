@@ -304,6 +304,8 @@ func (p *Provider) clusterFromClusterProfile(ctx context.Context, cp *unstructur
 	cfg.Password = ""
 	cfg.AuthProvider = nil
 	cfg.ExecProvider = nil
+	cfg.TLSClientConfig.CertData = nil
+	cfg.TLSClientConfig.KeyData = nil
 
 	cl, err := p.newCluster(cfg, p.scheme)
 	if err != nil {

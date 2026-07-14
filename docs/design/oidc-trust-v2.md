@@ -39,8 +39,8 @@ Guard: ValidatingAdmissionPolicy              Guard: RBAC + AdmissionPolicy
 │  │                          │    │ /dex/keys (JWKS)             │   │
 │  │ Projected Volumes:       │    │ /dex/token (OAuth2)          │   │
 │  │  /tokens/us-token        │    │                              │   │
-│  │    audience: https://    │    │ Clients:                     │   │
-│  │     172.19.0.4:6443      │    │  dex-auth-plugin (kubectl)   │   │
+│  │    audience: homelab:    │    │ Clients:                     │   │
+│  │     us-spoke             │    │  dex-auth-plugin (kubectl)   │   │
 │  │                          │    │  chainsaw-test-client        │   │
 │  │ Kubelet rotates every 1h │    └──────────────────────────────┘   │
 │  └──────────┬───────────────┘                                       │
@@ -49,13 +49,14 @@ Guard: ValidatingAdmissionPolicy              Guard: RBAC + AdmissionPolicy
 │  │ ClusterProfile Provider (v2)                                  │   │
 │  │                                                               │   │
 │  │  Reads ClusterProfile CR                                      │   │
-│  │  Extracts server + CA from status.accessProviders             │   │
+│  │  Reads {name}-kubeconfig Secret for server + CA only          │   │
 │  │  Creates REST config with BearerTokenFile:                    │   │
 │  │    /var/run/secrets/tokens/us-token                           │   │
+│  │  Clears TLS client cert from kubeconfig (forces SA token)    │   │
 │  │  → mgr.Engage(ctx, "us", cluster)                             │   │
 │  │                                                               │   │
-│  │  No kubeconfig Secret needed                                  │   │
-│  │  No SHA256 detection needed                                   │   │
+│  │  clusterKey = SHA256(Host+CAData) only — token changes        │   │
+│  │  in the Secret no longer trigger re-engagement                │   │
 │  │  No token-rotator dependency                                  │   │
 │  └───────────────────────────────────────────────────────────────┘   │
 │                                                                     │
@@ -75,9 +76,9 @@ Guard: ValidatingAdmissionPolicy              Guard: RBAC + AdmissionPolicy
 │  │                                                              │    │
 │  │ jwt:                                                         │    │
 │  │   - issuer: https://hub-api:6443   (hub kube-apiserver)     │    │
-│  │     audiences: [https://us-api:6443]  (this spoke's API)    │    │
+│  │     audiences: [homelab:us-spoke]    (logical target)        │    │
 │  │     claimValidationRules:                                    │    │
-│  │       - Only SA from binding-controller namespace            │    │
+│  │       - Only SA from default namespace on hub                │    │
 │  │     claimMappings:                                           │    │
 │  │       username: {prefix: "hub:", claim: sub}                 │    │
 │  │                                                              │    │
@@ -103,6 +104,17 @@ Guard: ValidatingAdmissionPolicy              Guard: RBAC + AdmissionPolicy
 │  │    → Only platform-admins may modify AuthenticationConfig    │    │
 │  └──────────────────────────────────────────────────────────────┘    │
 │                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │ Spoke RBAC for binding-controller                            │    │
+│  │                                                              │    │
+│  │  ClusterRole: hub-binding-controller                         │    │
+│  │    → Widgets CRUD across all namespaces                      │    │
+│  │    → Widget/status read                                      │    │
+│  │                                                              │    │
+│  │  ClusterRoleBinding → hub:system:serviceaccount:             │    │
+│  │                        default:binding-controller             │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                     │
 │  ┌─────────────┐                                                    │
 │  │ Widget Op   │ (unaffected — no kube-apiserver auth needed)       │
 │  │ OIDC Verif. │ (unaffected — direct Dex JWKS polling)             │
@@ -118,8 +130,8 @@ Guard: ValidatingAdmissionPolicy              Guard: RBAC + AdmissionPolicy
 | **Token source for humans** | Dex | Dex (unchanged) | Keep existing OIDC flow |
 | **Spoke auth config** | `oidc-*` CLI flags on kind-us | `AuthenticationConfiguration` resource | Modern API, per-issuer claim rules, structured prefix |
 | **Trust boundaries** | Any Dex token accepted | claimValidationRules restrict to specific namespace | Defense in depth |
-| **ClusterRegistration** | token-rotator writes kubeconfig Secret | Provider creates REST config from ClusterProfile + tokenFile | Remove token-rotator, simpler lifecycle |
-| **Credential rotation** | token-rotator every 5min + SHA256 detection | Kubelet rotates projected token file (default 1h) | Built-in Kubernetes mechanism |
+| **ClusterRegistration** | token-rotator writes a live token into the kubeconfig Secret | Operator writes the kubeconfig Secret once (server + CA only); provider overrides auth with tokenFile | Remove token-rotator, simpler lifecycle |
+| **Credential rotation** | token-rotator every 5min + SHA256 of full kubeconfig | Kubelet rotates projected token file (default 1h); clusterKey narrowed to SHA256(Host+CAData) so token writes don't re-trigger engagement | Built-in Kubernetes mechanism |
 | **Guardrails** | None | ValidatingAdmissionPolicy (3 policies) | Platform Wins anti-escalation |
 | **Identity mapping** | `oidc:<sub>` | `hub:system:serviceaccount:ns:sa` (controllers) / `dex:<sub>` (humans) | Collision-safe, auditable |
 
@@ -142,7 +154,7 @@ Replace token-rotator Dex password grant with projected SA tokens.
 
 **Changes:**
 - `deploy/platform-mvp/chart/hub-services/templates/binding-controller.yaml`: Add projected volume mounts
-- `providers/cluster-inventory-api/provider.go`: BearerTokenFile instead of kubeconfig Secret
+- `providers/cluster-inventory-api/provider.go`: BearerTokenFile instead of the kubeconfig Secret's bearer token/cert (server + CA still come from the Secret)
 - `deploy/platform-mvp/chart/hub-services/templates/token-rotator.yaml`: REMOVE
 - `platform-mvp/token-rotator/`: Mark DEPRECATED
 - `docs/platform-mvp/07-token-rotator.md`: Mark DEPRECATED
@@ -181,17 +193,21 @@ Full E2E validation and documentation updates.
 | **token-rotator** (controller + deployment) | REMOVED — replaced by Kubelet-managed projected token rotation |
 | **token-rotator metrics** | REMOVED (`token_rotator_*`) |
 | **{region}-spoke-controller Dex clients** | REMOVED from Dex config |
-| **{region}-access-kubeconfig Secrets** | REMOVED — no longer written |
+| **{region}-access-kubeconfig Secrets** | REMOVED — token-rotator no longer writes live tokens into a Secret |
 | **kind-us oidc-* CLI flags** | REMOVED — replaced by AuthenticationConfiguration |
-| **Provider SHA256 change detection** | REMOVED — no more kubeconfig Secret changes to detect |
-| **Provider kubeconfig Secret reading** | REMOVED — reads ClusterProfile status directly |
+| **Provider full-kubeconfig SHA256 change detection** | NARROWED — clusterKey is now SHA256(Host+CAData) only; token rotation in the Secret no longer triggers re-engagement |
+| **Provider kubeconfig Secret reading** | UNCHANGED — still reads `{name}-kubeconfig` Secret for server + CA; only the auth section is overridden with the projected SA token file |
 
-## 6. Risks and Mitigations
+## 6. Failure Modes and Mitigations
 
-| Risk | Mitigation |
-|------|------------|
-| Hub API server must be reachable from spoke for OIDC discovery | kind clusters on same Docker network have mutual connectivity; document network requirement for production |
-| Hub API server TLS cert must be trusted by spoke | kind uses self-signed certs; configure AuthenticationConfiguration with hub CA |
-| Projected token audience must match spoke API URL | Use kind internal IP — document audience resolution for production |
-| AuthenticationConfiguration is immutable after kube-apiserver start | Requires kube-apiserver restart on change; document this limitation |
-| ValidatingAdmissionPolicy might break CI if misconfigured | `failurePolicy: Fail` with paramKind to allow emergency disable |
+| Failure Mode | Impact | Mitigation |
+|---|---|---|
+| Spoke cannot reach hub OIDC discovery or JWKS endpoint | SA token authentication to spoke fails | Make hub issuer and JWKS endpoints highly available and reachable from spoke control plane |
+| Token audience does not match `homelab:us-spoke` | Spoke rejects the token | Keep projected token audience and `AuthenticationConfiguration` audiences in the same source of truth |
+| Token subject is not from `default` namespace on hub | Spoke rejects the token | Enforced by `claimValidationRules` — tokens from other namespaces silently fail auth |
+| RBAC binding missing on spoke | Binding controller authenticates but cannot deploy | Manage spoke RBAC declaratively via `binding-controller-rbac.yaml` template |
+| Hub signing keys rotate but spoke cannot refresh JWKS | Authentication failures after key rotation | Monitor JWKS reachability and kube-apiserver authentication errors |
+| Permissions too broad on spoke | Binding controller can modify more than intended | ClusterRole scoped to `platform.example.com/widgets` only; namespace boundary enforced by spoke RBAC |
+| Projected token file missing in controller pod | Provider falls through to kubeconfig cert (pre-v2.1), now fails closed | Provider clears TLS client cert from kubeconfig — if token file is missing, API calls fail with clear auth errors |
+| `AuthenticationConfiguration` misconfigured | No entities can authenticate to spoke | `failurePolicy` on guardrails requires kube-apiserver restart; document recovery procedure |
+| Guardrail lockout — all platform-admins removed | Cannot modify ClusterRoles or auth config | `failurePolicy: Fail` with documented recovery: kube-apiserver restart with updated config file
