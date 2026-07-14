@@ -6,7 +6,7 @@ import (
 )
 
 // GroupVersion is the API group/version these types belong to — must match
-// deploy/platform-mvp/widget-operator/crd.yaml's group and version.
+// deploy/platform-mvp/chart/us/templates/widget-operator.yaml's CRD group and version.
 var GroupVersion = schema.GroupVersion{Group: "platform.example.com", Version: "v1alpha1"}
 
 var (

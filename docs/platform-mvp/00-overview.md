@@ -1,5 +1,7 @@
 # Phase 0 — Architecture Overview
 
+> **v2 Trust Model** (feat/oidc-trust-v2): Controllers use projected ServiceAccount tokens with Kubelet rotation. Humans use Dex OIDC. Spoke uses AuthenticationConfiguration instead of legacy oidc-* flags. See [Phase 10](10-oidc-trust.md) and [design doc](../design/oidc-trust-v2.md).
+
 ## Multi-Cluster Runtime
 
 The platform connects a central **hub** cluster to one or more satellite **spoke** clusters using the `sigs.k8s.io/multicluster-runtime` framework. The hub serves as the control plane for declarative multi-cluster workload orchestration through [Kro](https://github.com/kubernetes-sigs/kro) Resource Graph Definitions (RGDs).
@@ -11,10 +13,9 @@ graph TB
     subgraph Hub["Hub Cluster (kind-hub)"]
         KRO["Kro<br/>ResourceGraphDefinitions"]
         CP["ClusterProfile/us<br/>multicluster.x-k8s.io"]
-        CPROVIDER["cluster-inventory-api<br/>Provider"]
-        BC["Binding Controller<br/>watches RWR → creates Widgets"]
-        TR["Token Rotator<br/>password grant → Dexter<br/>rotates spoke kubeconfigs"]
-        DEX["Dex IDP<br/>OIDC issuer<br/>JWKS endpoint"]
+        CPROVIDER["cluster-inventory-api<br/>Provider<br/>(BearerTokenFile)"]
+        BC["Binding Controller<br/>watches RWR → creates Widgets<br/>projected SA tokens"]
+        DEX["Dex IDP<br/>human OIDC only<br/>JWKS endpoint"]
         CERT["cert-manager<br/>self-signed TLS"]
         NGINX["nginx-ingress<br/>dex.example.com<br/>grafana.example.com"]
         PROM["Prometheus<br/>metrics aggregation"]
@@ -24,6 +25,7 @@ graph TB
         CRON["Chainsaw CronJob<br/>continuous E2E"]
         GM["GlobalWidget<br/>Kro RGD<br/>forEach region → RWR"]
         RWR["RegionalWidgetRequest<br/>CRD: region + tenant + message"]
+        HUBAPI["Hub kube-apiserver<br/>OIDC issuer<br/>/.well-known<br/>/openid/v1/jwks"]
     end
 
     subgraph Spoke["Spoke Cluster (kind-us)"]
@@ -31,16 +33,17 @@ graph TB
         OV["OIDC Verifier<br/>JWKS polling<br/>/verify endpoint"]
         WIDGET["Widget CR<br/>message + endpoint"]
         TNS["Tenant Namespaces<br/>acme-corp, ..."]
+        AUTH["AuthenticationConfiguration<br/>hub issuer (SA tokens)<br/>dex issuer (humans)"]
+        VAP["ValidatingAdmissionPolicy<br/>Platform Wins<br/>3 guardrails"]
     end
 
-    CPROVIDER -->|"poll + engage"| CP
-    TR -->|"watch ControlPlaneHealthy"| CP
-    TR -->|"POST /token"| DEX
-    TR -->|"write us-access-kubeconfig"| CPROVIDER
+    CPROVIDER -->|"poll ClusterProfile"| CP
+    BC -->|"reads projected token"| HUBAPI
+    HUBAPI -->|"Kubelet rotates token file"| BC
     GM -->|"forEach region"| RWR
     BC -->|"watch"| RWR
     BC -->|"mgr.GetCluster(region)"| CPROVIDER
-    CPROVIDER -->|"REST config + Watch"| Spoke
+    CPROVIDER -->|"REST config + BearerTokenFile"| Spoke
     BC -->|"create Widget<br/>in tenant ns"| WIDGET
     WO -->|"reconcile"| WIDGET
     OV -->|"GET /keys (5m)"| DEX
@@ -59,7 +62,7 @@ graph TB
 
 1. **Discovery** — polls `ClusterProfile` CRDs on the hub, extracting kubeconfig Secrets
 2. **Engagement** — calls `mgr.Engage(ctx, regionName, cluster)` to register spoke clusters with the controller-runtime multicluster manager
-3. **Change detection** — SHA256-hashes kubeconfig bytes; on change, disengages old cluster and re-engages new
+3. **Change detection** — computes clusterKey from server URL + CA certificate data; on server change, disengages old cluster and re-engages new (v2: token-only changes no longer trigger re-engagement)
 4. **Delegation** — controllers like the binding-controller call `mgr.GetCluster(ctx, region)` to obtain a `cluster.Cluster` that provides a `client.Client` scoped to the spoke
 
 ```mermaid
@@ -85,13 +88,13 @@ sequenceDiagram
 
 ### Multi-Tenancy
 
-Multi-tenancy is implemented at the workload layer through the `tenant` field on `RegionalWidgetRequest` (`deploy/platform-mvp/chart/hub/templates/regionalwidgetrequest-crd.yaml:40-45`):
+Multi-tenancy is implemented at the workload layer through the `tenant` field on `RegionalWidgetRequest` (`deploy/platform-mvp/chart/crds/templates/regionalwidgetrequest-crd.yaml:40-45`):
 
 ```yaml
-tenant:
+labels:
   type: object
   properties:
-    id:
+    platform.example.com/tenant:
       type: string
       description: Tenant identifier used as spoke-side namespace for workload isolation
 ```
@@ -107,9 +110,9 @@ sequenceDiagram
     participant Hub as Hub Cluster
     participant Spoke as Spoke (kind-us)
 
-    User->>GW: Create GlobalWidget{regions:[us], tenant:{id:"acme-corp"}}
+    User->>GW: Create GlobalWidget{regions:[us], labels:{platform.example.com/tenant:"acme-corp"}}
     GW->>GW: forEach regions → emit RWR
-    GW->>RWR: RegionalWidgetRequest{region:us, tenant:{id:"acme-corp"}}
+    GW->>RWR: RegionalWidgetRequest{region:us, label:platform.example.com/tenant=acme-corp}
     BC->>RWR: Watch: new RWR detected
     BC->>BC: tenantNamespace() → "acme-corp"
     BC->>Hub: mgr.GetCluster("us")
@@ -126,20 +129,22 @@ See [Phase 9 — Multi-Tenancy](09-multi-tenancy.md) for full details including 
 | Component | Cluster | Source | Purpose |
 |-----------|---------|--------|---------|
 | **Kro** | hub | `sigs.k8s.io/kro` | ResourceGraphDefinition engine; expands GlobalWidget → RegionalWidgetRequests |
-| **ClusterProfile CRD** | hub | `deploy/platform-mvp/chart/hub/templates/fleet.yaml` | Declares spoke clusters to the multicluster provider |
-| **cluster-inventory-api Provider** | hub | `providers/cluster-inventory-api/provider.go` | Implements `multicluster.Provider`; discovers + engages spoke clusters |
-| **Binding Controller** | hub | `platform-mvp/binding-controller/` | Watches `RegionalWidgetRequest` on hub, creates `Widget` on spoke |
-| **Token Rotator** | hub | `platform-mvp/token-rotator/` | Authenticates to Dex (password grant), rotates spoke kubeconfig tokens every 5m |
-| **Dex IDP** | hub | Helm subchart (`dex`), config at `chart/hub/templates/dex.yaml` | OIDC identity provider; issues JWTs, serves JWKS |
-| **cert-manager** | hub | Helm subchart, self-signed ClusterIssuer at `chart/hub/templates/cert-manager.yaml` | TLS certificates for Dex + Grafana ingress |
+| **ClusterProfile CRD** | hub | `deploy/platform-mvp/chart/hub-services/templates/fleet.yaml` | Declares spoke clusters to the multicluster provider |
+| **cluster-inventory-api Provider** | hub | `providers/cluster-inventory-api/provider.go` | Implements `multicluster.Provider`; discovers + engages spoke clusters; v2 uses BearerTokenFile for auth |
+| **Binding Controller** | hub | `platform-mvp/binding-controller/` | Watches `RegionalWidgetRequest` on hub, creates `Widget` on spoke; uses projected SA tokens for spoke auth |
+| **Hub kube-apiserver** | hub | Kubernetes built-in | Serves as OIDC issuer for controller ServiceAccount tokens (`/.well-known/openid-configuration`, `/openid/v1/jwks`) |
+| **Dex IDP** | hub | Helm subchart (`dex`), config at `chart/infrastructure/templates/dex.yaml` | OIDC identity provider for human/platform admin auth |
+| **cert-manager** | hub | Helm subchart, self-signed ClusterIssuer at `chart/infrastructure/templates/cert-manager.yaml` | TLS certificates for Dex + Grafana ingress |
 | **nginx-ingress** | hub | Helm subchart (`ingress-nginx`) | Exposes Dex and Grafana externally |
-| **Prometheus** | hub | kube-prometheus-stack | Scrapes binding-controller + token-rotator metrics every 15s |
-| **Grafana** | hub | kube-prometheus-stack (bundled) | Dashboards: chainsaw-results, cluster-fitness, controller-deep-dive, token-rotation |
+| **Prometheus** | hub | kube-prometheus-stack | Scrapes binding-controller metrics every 15s |
+| **Grafana** | hub | kube-prometheus-stack (bundled) | Dashboards: chainsaw-results, cluster-fitness, controller-deep-dive |
 | **Loki** | hub | grafana/loki (SingleBinary) | Log aggregation; receives Kubernetes events from event-exporter |
-| **Event Exporter** | hub | `chart/hub/templates/event-exporter.yaml` | Routes Kubernetes events to Loki with structured labels |
-| **Chainsaw CronJob** | hub | `chart/hub/templates/chainsaw-cronjob.yaml` | Runs E2E test suite every 2m against both clusters; pushes results to Loki |
+| **Event Exporter** | hub | `chart/infrastructure/templates/event-exporter.yaml` | Routes Kubernetes events to Loki with structured labels |
+| **Chainsaw CronJob** | hub | `chart/infrastructure/templates/chainsaw-cronjob.yaml` | Runs E2E test suite every 2m against both clusters; pushes results to Loki |
 | **Widget Operator** | spoke | `platform-mvp/widget-operator/` | Reconciles Widget CR: Pending → Ready (2s delay) |
 | **OIDC Verifier** | spoke | `platform-mvp/oidc-verifier/` | Polls Dex JWKS every 5m; validates Bearer tokens via `/verify`; emits structured AUDIT logs |
+| **AuthenticationConfiguration** | spoke | `chart/us/templates/auth-config.yaml` | Spoke kube-apiserver auth config: hub issuer (controllers) + Dex issuer (humans) |
+| **ValidatingAdmissionPolicy** | spoke | `chart/us/templates/admission-guardrails.yaml` | Platform Wins guardrails: restrict ClusterRole mgmt, protect system ns, protect auth config |
 
 ---
 
@@ -155,7 +160,7 @@ make deploy-cd
 # Build + deploy in-cluster Chainsaw test runner
 make chainsaw-runner
 
-# Run full E2E validation (15 tests)
+# Run full E2E validation (20 tests)
 make validate
 
 # Tear everything down
@@ -170,13 +175,15 @@ make clean
 | 1 | `01-kind-topology.md` | kind cluster topology (hub + us), cross-cluster networking |
 | 2 | — | Widget Operator (spoke-side CRD + reconciler) — covered inline in chart docs |
 | 3 | `03-fleet-registration.md` | ClusterProfile CRD, cluster-inventory-api Provider, spoke engagement |
-| 4 | `04-kro-globalbucket-api.md` | Kro RGD (GlobalWidget → RegionalWidgetRequest), tenant passthrough |
+| 4 | `04-kro-downstream-orchestration.md` | Kro RGD (GlobalWidget → RegionalWidgetRequest), downstream orchestration guinea pig example |
 | 5 | `05-binding-controller.md` | Hub-side reconciler: RWR → Widget on spoke, tenant namespace isolation |
-| 6 | `06-e2e-verification.md` | All 15 Chainsaw E2E tests |
-| 7 | `07-token-rotator.md` | Token rotation lifecycle, Dex password grant, rotating trust |
+| 6 | `06-e2e-verification.md` | All Chainsaw E2E tests |
+| 7 | `07-token-rotator.md` | **REMOVED (historical)** — v1 component, code deleted; replaced by projected SA tokens in v2 |
 | 8 | `08-observability.md` | Prometheus, Grafana dashboards, Loki, event-exporter, Chainsaw CronJob |
-| 9 | `09-multi-tenancy.md` | Tenant isolation via spec.tenant.id, spoke-side namespace + RBAC |
-| 10 | `10-oidc-trust.md` | Dex IDP → OIDC Verifier cross-cluster trust, JWKS polling, audit trail |
+| 9 | `09-multi-tenancy.md` | Tenant isolation via platform.example.com/tenant label, spoke-side namespace + RBAC with 3 role tiers (admin/developer/analyst) |
+| 10 | `10-oidc-trust.md` | **v2**: Split identity model — projected SA tokens (controllers) + Dex OIDC (humans), AuthenticationConfiguration |
+| 11 | `../design/oidc-trust-v2.md` | Full v2 trust model design document |
+| 12 | `12-security-guardrails.md` | Platform Wins: ValidatingAdmissionPolicy guardrails |
 | 99 | `99-extending-to-eu-asia.md` | Adding EU/ASIA regions — zero code changes required |
 
 ---
@@ -185,10 +192,14 @@ make clean
 
 1. **Hub-spoke over flat mesh**: The hub is the single source of truth. All cross-cluster decisions originate there. Spokes are stateless consumers.
 
-2. **Credentials over direct API access**: The hub does not permanently cache spoke kubeconfigs. The token-rotator refreshes them every 5 minutes via Dex OIDC, and the multicluster provider detects changes via SHA256 hashing.
+2. **Split identity model**: Controllers authenticate with **projected ServiceAccount tokens** (hub kube-apiserver as issuer, Kubelet-managed rotation). Humans authenticate with **Dex OIDC** (external IdP). Clean separation of service and human identity.
 
-3. **Declarative cluster inventory**: Adding a new region is a matter of creating another `ClusterProfile` CRD and deploying the widget-operator + oidc-verifier. The Kro RGD, binding-controller, and token-rotator handle the rest automatically via the provider's discovery loop.
+3. **Credentials over direct API access**: The hub does not permanently cache spoke kubeconfigs. Tokens are rotated automatically by the Kubelet (~1h) and the provider constructs REST configs with `BearerTokenFile` paths.
 
-4. **Tenant isolation via namespaces**: Tenants are scoped to spoke-side Kubernetes namespaces with dedicated RBAC. The binding-controller routes Widgets to the correct namespace based on `spec.tenant.id` on the `RegionalWidgetRequest`.
+4. **Declarative cluster inventory**: Adding a new region is a matter of creating another `ClusterProfile` CRD and deploying the widget-operator + oidc-verifier. The Kro RGD, binding-controller, and provider handle the rest automatically via the discovery loop.
 
-5. **Continuous compliance**: The Chainsaw CronJob runs the full E2E suite every 2 minutes in-cluster, pushing structured results to Loki. Grafana dashboards render pass/fail trends and controller health in real time.
+5. **Tenant isolation via namespaces**: Tenants are scoped to spoke-side Kubernetes namespaces with dedicated RBAC. The binding-controller routes Widgets to the correct namespace based on the `platform.example.com/tenant` label on the `RegionalWidgetRequest`.
+
+6. **Continuous compliance**: The Chainsaw CronJob runs the full E2E suite every 2 minutes in-cluster, pushing structured results to Loki. Grafana dashboards render pass/fail trends and controller health in real time.
+
+7. **Platform Wins guardrails**: `ValidatingAdmissionPolicy` resources prevent non-platform-admin identities from modifying ClusterRoles, system namespaces, or the AuthenticationConfiguration. Enabled by default.

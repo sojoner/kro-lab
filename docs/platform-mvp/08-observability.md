@@ -12,7 +12,6 @@ graph TB
         subgraph Metrics
             PROM["Prometheus<br/>2d retention<br/>15s scrape"]
             SM_BC["ServiceMonitor<br/>binding-controller"]
-            SM_TR["ServiceMonitor<br/>token-rotator"]
             NE["node-exporter<br/>DaemonSet"]
             KSM["kube-state-metrics"]
         end
@@ -23,7 +22,7 @@ graph TB
         end
 
         subgraph Dashboards
-            GRAF["Grafana<br/>admin/admin<br/>4 custom dashboards"]
+            GRAF["Grafana<br/>admin/admin<br/>3 custom dashboards"]
         end
 
         subgraph Compliance
@@ -40,7 +39,6 @@ graph TB
     end
 
     SM_BC -->|"scrape :8080"| PROM
-    SM_TR -->|"scrape :8080"| PROM
     NE -->|"node metrics"| PROM
     KSM -->|"resource metrics"| PROM
     PROM --> GRAF
@@ -54,7 +52,7 @@ graph TB
 
 ## Prometheus
 
-Deployed via `kube-prometheus-stack` Helm chart (`deploy/platform-mvp/observability/kube-prometheus-stack-values.yaml`):
+Deployed via `kube-prometheus-stack` Helm chart (`chart/infrastructure/values.yaml`, `kube-prometheus-stack:` key):
 
 | Setting | Value |
 |---------|-------|
@@ -66,10 +64,9 @@ Deployed via `kube-prometheus-stack` Helm chart (`deploy/platform-mvp/observabil
 
 ### ServiceMonitors
 
-Two custom ServiceMonitors in `chart/hub/templates/servicemonitors.yaml`:
+One custom ServiceMonitor in `chart/hub-services/templates/servicemonitors.yaml`:
 
-- **binding-controller** (lines 4-18): scrapes `:8080/metrics` every 15s
-- **token-rotator** (lines 21-36): scrapes `:8080/metrics` every 15s
+- **binding-controller**: scrapes `:8080/metrics` every 15s
 
 Plus kube-prometheus-stack's built-in ServiceMonitors for core Kubernetes components.
 
@@ -79,18 +76,17 @@ Deployed as part of `kube-prometheus-stack`:
 
 - **Credentials**: `admin` / `admin` (values.yaml lines 29-31)
 - **Loki datasource**: Pre-configured at `http://loki.monitoring:3100` (values.yaml lines 40-49)
-- **Custom dashboards** (mounted from ConfigMaps via `chart/hub/templates/dashboards.yaml`):
+- **Custom dashboards** (mounted from ConfigMaps via `chart/infrastructure/templates/dashboards.yaml`):
 
 | Dashboard | ConfigMap | Purpose |
 |-----------|-----------|---------|
 | Chainsaw Results | `grafana-dashboard-chainsaw-results` | E2E test pass/fail trends over time |
 | Cluster Fitness | `grafana-dashboard-cluster-fitness` | Node readiness, pod health, resource utilization |
 | Controller Deep Dive | `grafana-dashboard-controller-deep-dive` | Binding controller reconcile latency, regional distribution |
-| Token Rotation | `grafana-dashboard-token-rotation` | Rotation frequency, success rate, last rotation timestamp |
 
 ## Loki
 
-Deployed via `grafana/loki` Helm chart (`deploy/platform-mvp/observability/loki-values.yaml`):
+Deployed via `grafana/loki` Helm chart (`chart/infrastructure/values.yaml`, `loki:` key):
 
 | Setting | Value |
 |---------|-------|
@@ -102,7 +98,7 @@ Deployed via `grafana/loki` Helm chart (`deploy/platform-mvp/observability/loki-
 
 ### Event Exporter — Log Shipping
 
-The `kubernetes-event-exporter` (`chart/hub/templates/event-exporter.yaml:21`) replaces promtail for Kubernetes events. It watches all namespaces and sends structured events to Loki:
+The `kubernetes-event-exporter` (`chart/infrastructure/templates/event-exporter.yaml:21`) replaces promtail for Kubernetes events. It watches all namespaces and sends structured events to Loki:
 
 ```yaml
 # Lines 41-62: Loki receiver config
@@ -118,11 +114,11 @@ receivers:
         namespace: "{{ .Namespace }}"
 ```
 
-**Note on promtail**: The architecture originally planned to use `promtail` for log shipping (including oidc-verifier AUDIT logs), but the production deployment uses `kubernetes-event-exporter` for Kubernetes event routing to Loki. The oidc-verifier's structured `AUDIT` log lines to stdout are not currently shipped to Loki — this is a known gap for future iteration. See `deploy/platform-mvp/observability/promtail-values.yaml` for the promtail configuration that would be used when this is enabled.
+**Note on promtail**: The architecture originally planned to use `promtail` for log shipping (including oidc-verifier AUDIT logs), but the production deployment uses `kubernetes-event-exporter` for Kubernetes event routing to Loki. The oidc-verifier's structured `AUDIT` log lines to stdout are not currently shipped to Loki — this is a known gap for future iteration. See `chart/infrastructure/values.yaml` (`promtail:` key) for the promtail configuration that would be used when this is enabled.
 
 ## Ingress (nginx)
 
-Deployed via `ingress-nginx/ingress-nginx` Helm chart (`deploy/platform-mvp/observability/nginx-ingress-values.yaml`):
+Deployed via `ingress-nginx/ingress-nginx` Helm chart (`chart/infrastructure/values.yaml`, `ingress-nginx:` key):
 
 - **HostPort** (kind): 80 + 443 on hub control-plane node
 - **Routes**: `dex.example.com` → Dex service, `grafana.example.com` → Grafana service
@@ -148,7 +144,7 @@ graph LR
 
 ## Chainsaw CronJob — Continuous Compliance
 
-A `CronJob` (`chart/hub/templates/chainsaw-cronjob.yaml:1-84`) runs the full E2E test suite every 2 minutes against both clusters:
+A `CronJob` (`chart/infrastructure/templates/chainsaw-cronjob.yaml:1-84`) runs the full E2E test suite every 2 minutes against both clusters:
 
 ```mermaid
 sequenceDiagram
@@ -195,12 +191,6 @@ sequenceDiagram
     GRAF->>PROM: binding_controller_roundtrip_seconds
     PROM-->>GRAF: reconcile latency histogram
 
-    Note over GRAF: Token Rotation Dashboard
-    GRAF->>PROM: token_rotator_rotations_total{result="success"}
-    PROM-->>GRAF: rotation count by region
-    GRAF->>PROM: token_rotator_last_rotation_timestamp_seconds
-    PROM-->>GRAF: last rotation time
-
     Note over GRAF: Chainsaw Results
     GRAF->>LOKI: {job="chainsaw-runner"}
     LOKI-->>GRAF: test run JSON entries
@@ -215,20 +205,20 @@ sequenceDiagram
 | `07-observability-stack` | Prometheus, Grafana, Loki pods are Ready; all ServiceMonitors exist |
 | `08-chainsaw-cronjob` | CronJob exists, is scheduled, previous job completed |
 | `09-ingress-log-shipping` | Dex + Grafana ingresses exist with TLS; Event Exporter routes events to Loki |
-| `12-dashboard-metrics` | Prometheus returns data for binding-controller and token-rotator metrics |
-| `15-dashboard-data` | Grafana dashboards render data for cluster-fitness, controller-deep-dive, and token-rotation panels via port-forward queries to Prometheus |
+| `12-dashboard-metrics` | Prometheus returns data for binding-controller metrics |
+| `15-dashboard-data` | Grafana dashboards render data for cluster-fitness and controller-deep-dive panels via port-forward queries to Prometheus |
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `observability/kube-prometheus-stack-values.yaml` | Prometheus + Grafana Helm values |
-| `observability/loki-values.yaml` | Loki SingleBinary Helm values |
-| `observability/nginx-ingress-values.yaml` | nginx-ingress Helm values |
+| `chart/infrastructure/values.yaml` (`kube-prometheus-stack:` key) | Prometheus + Grafana Helm values |
+| `chart/infrastructure/values.yaml` (`loki:` key) | Loki SingleBinary Helm values |
+| `chart/infrastructure/values.yaml` (`ingress-nginx:` key) | nginx-ingress Helm values |
 | `observability/runner.sh` | Chainsaw runner entrypoint |
 | `observability/Dockerfile.chainsaw-runner` | Runner image build |
-| `chart/hub/templates/servicemonitors.yaml` | ServiceMonitor CRDs for binding-controller + token-rotator |
-| `chart/hub/templates/event-exporter.yaml` | Event Exporter Deployment + ConfigMap |
-| `chart/hub/templates/chainsaw-cronjob.yaml` | Chainsaw CronJob |
-| `chart/hub/templates/dashboards.yaml` | Grafana dashboard ConfigMaps |
-| `dashboards/*.json` | Dashboard JSON definitions |
+| `chart/hub-services/templates/servicemonitors.yaml` | ServiceMonitor CRD for binding-controller |
+| `chart/infrastructure/templates/event-exporter.yaml` | Event Exporter Deployment + ConfigMap |
+| `chart/infrastructure/templates/chainsaw-cronjob.yaml` | Chainsaw CronJob |
+| `chart/infrastructure/templates/dashboards.yaml` | Grafana dashboard ConfigMaps |
+| `chart/infrastructure/dashboards/*.json` | Dashboard JSON definitions |

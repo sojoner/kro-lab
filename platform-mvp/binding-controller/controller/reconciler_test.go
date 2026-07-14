@@ -190,8 +190,6 @@ func newRegionalWidgetRequest(name, region, message string) *unstructured.Unstru
 
 func newRegionalWidgetRequestWithTenant(name, region, message, tenantID string) *unstructured.Unstructured {
 	obj := newRegionalWidgetRequest(name, region, message)
-	obj.Object["spec"].(map[string]interface{})["tenant"] = map[string]interface{}{
-		"id": tenantID,
-	}
+	obj.SetLabels(map[string]string{"platform.example.com/tenant": tenantID})
 	return obj
 }

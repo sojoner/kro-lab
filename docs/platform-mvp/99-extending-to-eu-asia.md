@@ -12,7 +12,7 @@ The platform is designed for zero-code region extension. Adding a new spoke clus
 | **Cluster resolution** | Binding controller uses `mgr.GetCluster(ctx, region)` — provider resolves any region name |
 | **RegionalWidgetRequest** | Supports arbitrary region names (enum: `us`, `eu`, `asia` in CRD validation) |
 | **Tenant isolation** | Tenant namespace routing works unchanged per-region |
-| **Token rotation** | `dexClientIDTemplate: "{region}-spoke-controller"` auto-resolves per-region client IDs |
+| **Token rotation** | v2: Kubelet-managed projected SA tokens — no per-region config needed |
 | **Phase 4–5 logic** | Kro RGD + Binding Controller — **zero changes required** |
 
 ## What's Needed Per New Region
@@ -55,7 +55,7 @@ EOF
 
 ### 4. Done
 
-The token-rotator automatically picks up the new `ClusterProfile` and begins rotating tokens. The multicluster provider engages the new cluster. Creating a `GlobalWidget{regions:[us, eu, asia]}` now produces one `RegionalWidgetRequest` per region, and the binding-controller creates Widgets on all three spokes.
+In v2, the multicluster provider automatically picks up the new `ClusterProfile` and engages the new cluster. Controller auth uses projected ServiceAccount tokens (BearerTokenFile) — no token-rotator needed. Creating a `GlobalWidget{regions:[us, eu, asia]}` now produces one `RegionalWidgetRequest` per region, and the binding-controller creates Widgets on all three spokes.
 
 ```mermaid
 graph LR
@@ -95,8 +95,7 @@ This creates Widgets in `acme-corp` namespace on all three spokes — tenant iso
 | Tenant namespaces + RBAC | Yes | `make deploy-spoke` creates them |
 | ClusterProfile on hub | Yes | `kubectl apply -f` |
 | kubeconfig Secret on hub | Yes | Internal kubeconfig from cluster |
-| Dex client per region | Yes | `{region}-spoke-controller` entry in `values.yaml` |
+| Dex client per region | Yes | `{region}-spoke-controller` entry in `values.yaml` (v2: controller auth uses projected SA tokens; Dex clients retained for infrastructure backward compat only) |
 | GlobalWidget RGD change | **No** | Already supports arbitrary `spec.regions` |
 | Binding controller change | **No** | `mgr.GetCluster(ctx, region)` generic |
-| Token rotator change | **No** | `dexClientIDTemplate` auto-resolves |
 | Observability change | **No** | One hub serves all regions |

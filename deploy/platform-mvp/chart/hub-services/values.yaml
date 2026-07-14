@@ -1,0 +1,31 @@
+# Hub Services — controllers that depend on infrastructure (Dex, cert-manager)
+# Release name: hub-services (or whatever you choose)
+
+dex:
+  # Dex issuer URL — must match the Dex deployment in the infrastructure chart
+  issuer: "https://bm4080.taildf7067.ts.net/dex"
+
+bindingController:
+  replicas: 1
+  metricsPort: 8080
+  image:
+    repository: sojoner/binding-controller
+    tag: dev
+    pullPolicy: Always
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+  dex:
+    enabled: true
+    clientID: us-spoke-controller
+    secretName: binding-controller-dex
+    secretKey: client-secret
+    pluginImage:
+      repository: sojoner/dex-auth-plugin
+      tag: dev
+      pullPolicy: Always
+  spokeTokens:
+    - serviceAccountToken:
+        path: us-token
+        audience: https://us-control-plane:6443
+        expirationSeconds: 3600

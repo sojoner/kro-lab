@@ -19,12 +19,11 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
-// fakeCluster is a minimal cluster.Cluster test double.
 type fakeCluster struct {
 	cluster.Cluster
-	indexer  *fakeFieldIndexer
-	started  chan struct{}
-	stopped  chan struct{}
+	indexer *fakeFieldIndexer
+	started chan struct{}
+	stopped chan struct{}
 }
 
 func (f *fakeCluster) GetFieldIndexer() client.FieldIndexer { return f.indexer }
@@ -45,7 +44,6 @@ func (f *fakeFieldIndexer) IndexField(ctx context.Context, obj client.Object, fi
 	return nil
 }
 
-// fakeClusterFactory creates clusters that track start/stop lifecycle.
 type fakeClusterFactory struct {
 	clusters []*fakeCluster
 }
@@ -73,11 +71,13 @@ users:
   user:
     token: token-a`
 
-const testKubeconfigB = `apiVersion: v1
+// testKubeconfigServerChanged has a different server URL to test
+// server/endpoint change detection (v2 cluster key is host+CA, not token).
+const testKubeconfigServerChanged = `apiVersion: v1
 kind: Config
 clusters:
 - cluster:
-    server: https://127.0.0.1:6443
+    server: https://192.168.1.100:6443
   name: us
 contexts:
 - context:
@@ -88,15 +88,7 @@ current-context: kind-us
 users:
 - name: admin
   user:
-    token: token-b-rotated`
-
-func hashKubeconfig(data string) string {
-	h := sha256.New()
-	h.Write([]byte(data))
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-// ── Kubeconfig change detection ──────────────────────────────────
+    token: token-a`
 
 func TestProvider_KubeconfigUnchanged_SkipsReengage(t *testing.T) {
 	cp := &unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": ClusterProfileAPIVersion, "kind": ClusterProfileKind, "metadata": map[string]interface{}{"name": "us", "namespace": "default"}, "spec": map[string]interface{}{"clusterManager": map[string]interface{}{"name": "us-fleet-manager"}}}}
@@ -116,7 +108,6 @@ func TestProvider_KubeconfigUnchanged_SkipsReengage(t *testing.T) {
 
 	go func() { _ = p.Run(ctx, &fakeManagerInternal{aware: aware}) }()
 
-	// First engagement
 	select {
 	case name := <-aware.engaged:
 		if name != "us" {
@@ -126,12 +117,10 @@ func TestProvider_KubeconfigUnchanged_SkipsReengage(t *testing.T) {
 		t.Fatal("timed out waiting for first engagement")
 	}
 
-	// Wait for another discovery cycle — kubeconfig unchanged
 	select {
 	case <-aware.engaged:
-		t.Fatal("unexpected re-engagement: kubeconfig should not have changed")
+		t.Fatal("unexpected re-engagement: server+CA should not have changed")
 	case <-time.After(200 * time.Millisecond):
-		// expected — no re-engagement
 	}
 
 	if len(factory.clusters) != 1 {
@@ -139,7 +128,13 @@ func TestProvider_KubeconfigUnchanged_SkipsReengage(t *testing.T) {
 	}
 }
 
-func TestProvider_KubeconfigChange_ReengagesCluster(t *testing.T) {
+// TestProvider_ServerChange_ReengagesCluster verifies that when the
+// kubeconfig Secret's server URL changes (which alters the clusterKey
+// hash), the provider disengages the old cluster and engages a new one.
+// In v2, token-only changes do NOT trigger re-engagement because the
+// clusterKey is computed from Host + CAData, not the full kubeconfig
+// (tokens are managed by Kubelet via projected volumes).
+func TestProvider_ServerChange_ReengagesCluster(t *testing.T) {
 	cp := &unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": ClusterProfileAPIVersion, "kind": ClusterProfileKind, "metadata": map[string]interface{}{"name": "us", "namespace": "default"}, "spec": map[string]interface{}{"clusterManager": map[string]interface{}{"name": "us-fleet-manager"}}}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "us" + KubeconfigSecretSuffix, Namespace: "default"}, Data: map[string][]byte{"value": []byte(testKubeconfigA)}}
 
@@ -157,7 +152,6 @@ func TestProvider_KubeconfigChange_ReengagesCluster(t *testing.T) {
 
 	go func() { _ = p.Run(ctx, &fakeManagerInternal{aware: aware}) }()
 
-	// First engagement
 	select {
 	case <-aware.engaged:
 	case <-ctx.Done():
@@ -169,30 +163,27 @@ func TestProvider_KubeconfigChange_ReengagesCluster(t *testing.T) {
 	}
 	oldCluster := factory.clusters[0]
 
-	// Update the secret with new kubeconfig
-	updatedSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "us" + KubeconfigSecretSuffix, Namespace: "default"}, Data: map[string][]byte{"value": []byte(testKubeconfigB)}}
+	// Update secret with a kubeconfig that has a *different server URL*.
+	// This triggers re-engagement in v2 (clusterKey change).
+	updatedSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "us" + KubeconfigSecretSuffix, Namespace: "default"}, Data: map[string][]byte{"value": []byte(testKubeconfigServerChanged)}}
 	if err := hubClient.Update(ctx, updatedSecret); err != nil {
 		t.Fatalf("failed to update secret: %v", err)
 	}
 
-	// Wait for re-engagement
 	select {
 	case <-aware.engaged:
 	case <-ctx.Done():
-		t.Fatal("timed out waiting for re-engagement after kubeconfig change")
+		t.Fatal("timed out waiting for re-engagement after server URL change")
 	}
 
-	// New cluster should have been created
 	if len(factory.clusters) != 2 {
 		t.Errorf("expected 2 clusters created (old + new), got %d", len(factory.clusters))
 	}
 
-	// Old cluster should have been stopped
 	select {
 	case <-oldCluster.stopped:
-		// Expected — old cluster was cancelled
 	case <-time.After(500 * time.Millisecond):
-		t.Error("old cluster was not stopped after kubeconfig change")
+		t.Error("old cluster was not stopped after server URL change")
 	}
 }
 
@@ -214,7 +205,6 @@ func TestProvider_ClusterProfileDeleted_RemovesCluster(t *testing.T) {
 
 	go func() { _ = p.Run(ctx, &fakeManagerInternal{aware: aware}) }()
 
-	// First engagement
 	select {
 	case <-aware.engaged:
 	case <-ctx.Done():
@@ -226,35 +216,35 @@ func TestProvider_ClusterProfileDeleted_RemovesCluster(t *testing.T) {
 	}
 	oldCluster := factory.clusters[0]
 
-	// Delete the ClusterProfile
 	if err := hubClient.Delete(ctx, cp); err != nil {
 		t.Fatalf("failed to delete ClusterProfile: %v", err)
 	}
 
-	// Wait for the next poll cycle to detect the deletion
 	time.Sleep(200 * time.Millisecond)
 
-	// Provider should have removed the cluster (context cancelled)
 	select {
 	case <-oldCluster.stopped:
-		// Expected
 	case <-time.After(500 * time.Millisecond):
 		t.Error("cluster was not stopped after ClusterProfile deletion")
 	}
 
-	// Get should return ErrClusterNotFound
 	_, err := p.Get(ctx, "us")
 	if err == nil {
 		t.Error("expected ErrClusterNotFound after deletion, got nil")
 	}
 }
 
-func TestProvider_HashFunction_DetectsChange(t *testing.T) {
-	hashA := hashKubeconfig(testKubeconfigA)
-	hashB := hashKubeconfig(testKubeconfigB)
+func TestProvider_ClusterKey_DetectsServerChange(t *testing.T) {
+	h1 := sha256.New()
+	h1.Write([]byte("https://127.0.0.1:6443"))
+	hashA := hex.EncodeToString(h1.Sum(nil))
+
+	h2 := sha256.New()
+	h2.Write([]byte("https://192.168.1.100:6443"))
+	hashB := hex.EncodeToString(h2.Sum(nil))
 
 	if hashA == hashB {
-		t.Fatal("expected different hashes for different kubeconfigs")
+		t.Fatal("expected different cluster keys for different server URLs")
 	}
 }
 
@@ -274,7 +264,6 @@ func TestProvider_IndexField_ReplaysOnFutureEngagement(t *testing.T) {
 		return &fakeCluster{indexer: indexer, started: make(chan struct{}), stopped: make(chan struct{})}, nil
 	}
 
-	// Register the index before any cluster has been engaged.
 	if err := p.IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName", func(client.Object) []string { return nil }); err != nil {
 		t.Fatalf("unexpected error registering index: %v", err)
 	}

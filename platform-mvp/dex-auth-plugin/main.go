@@ -25,8 +25,8 @@ const apiVersion = "client.authentication.k8s.io/v1"
 const kind = "ExecCredential"
 
 type ExecCredential struct {
-	APIVersion string              `json:"apiVersion"`
-	Kind       string              `json:"kind"`
+	APIVersion string               `json:"apiVersion"`
+	Kind       string               `json:"kind"`
 	Status     ExecCredentialStatus `json:"status"`
 }
 

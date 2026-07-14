@@ -64,11 +64,11 @@ cat >> "${WORKDIR}/tests/.chainsaw.yaml" <<EOF
       kubeconfig: ${WORKDIR}/kubeconfig-us-internal
 EOF
 
-REPORT_FILE="${WORKDIR}/tests/chainsaw-report.json"
+cd "${WORKDIR}/tests"
 START_NS=$(date +%s%N)
 
-if chainsaw test "${WORKDIR}/tests" \
-    --config "${WORKDIR}/tests/.chainsaw.yaml" \
+if chainsaw test . \
+    --config .chainsaw.yaml \
     --report-format JSON \
     --report-name chainsaw-report 2>&1; then
     RESULT="pass"
@@ -83,7 +83,9 @@ DURATION_MS=$(((END_NS - START_NS) / 1000000))
 
 TIMESTAMP=$(date -u +%s%N)
 
-if [ -f "${WORKDIR}/tests/chainsaw-report.json" ]; then
+if [ -f "chainsaw-report.json" ]; then
+    REPORT_JSON=$(jq -c . "chainsaw-report.json" 2>/dev/null || echo '{}')
+elif [ -f "${WORKDIR}/tests/chainsaw-report.json" ]; then
     REPORT_JSON=$(jq -c . "${WORKDIR}/tests/chainsaw-report.json" 2>/dev/null || echo '{}')
 else
     REPORT_JSON='{"error":"report not found"}'

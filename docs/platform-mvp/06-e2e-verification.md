@@ -1,6 +1,6 @@
 # Phase 6 — E2E Verification
 
-All 15 Chainsaw E2E tests, run via `make validate`. Tests are declarative YAML files under `tests/e2e/tests/`.
+All 20 Chainsaw E2E tests, run via `make validate`. Tests are declarative YAML files under `tests/e2e/tests/`.
 
 ---
 
@@ -10,7 +10,7 @@ All 15 Chainsaw E2E tests, run via `make validate`. Tests are declarative YAML f
 graph TB
     subgraph "Chainsaw Runner"
         CFG[".chainsaw.yaml<br/>multi-cluster config"]
-        TESTS["15 test files<br/>tests/e2e/tests/*/"]
+        TESTS["20 test files<br/>tests/e2e/tests/*/"]
     end
 
     subgraph "Target Clusters"
@@ -40,7 +40,7 @@ Each test specifies its target cluster via `cluster: hub` or `cluster: us`. Cros
 
 ---
 
-## All 15 Tests
+## All 20 Tests
 
 | # | Test | Cluster | What It Validates |
 |---|------|---------|-------------------|
@@ -54,11 +54,16 @@ Each test specifies its target cluster via `cluster: hub` or `cluster: us`. Cros
 | 08 | `chainsaw-cronjob-running` | hub | CronJob scheduled; previous job completed successfully |
 | 09 | `ingress-and-log-shipping` | hub | Dex + Grafana ingresses exist with TLS; Event Exporter routes K8s events to Loki |
 | 10 | `oidc-trust` | hub→us | Dex IDP healthy; OIDC discovery; JWT issuance; JWKS serving; oidc-verifier cross-cluster JWT validation; AUDIT trail |
-| 11 | `rotating-trust` | hub→us | Dex `trust-jwks` ConfigMap present on spoke; oidc-verifier mounts trust keys |
-| 12 | `dashboard-metrics` | hub | Prometheus returns data for binding-controller + token-rotator metrics via PromQL queries |
-| 13 | `tenant-namespace-isolation` | hub→us | RWR with `tenant.id=acme-corp` → Widget created in `acme-corp` ns on spoke; NOT in default ns |
-| 14 | `token-rotation-proof` | hub | Token-rotator produces `token_rotation_success` metrics; `us-access-kubeconfig` secret exists |
-| 15 | `dashboard-data-rendering` | hub | Grafana dashboards render data for cluster-fitness, controller-deep-dive, and token-rotation panels via port-forwarded PromQL queries |
+| 11 | `rotating-trust` | hub→us | **v2**: Projected SA token volume in binding-controller; Dex retained for human OIDC |
+| 12 | `dashboard-metrics` | hub | Prometheus returns data for binding-controller metrics via PromQL queries |
+| 13 | `tenant-namespace-isolation` | hub→us | RWR with `label platform.example.com/tenant=acme-corp` → Widget created in `acme-corp` ns on spoke; NOT in default ns |
+| 15 | `dashboard-data-rendering` | hub | Grafana dashboards render data for cluster-fitness and controller-deep-dive panels via port-forwarded PromQL queries |
+| 16 | `auth-configuration` | us | **v2**: Spoke kube-apiserver uses AuthenticationConfiguration; dual-issuer (hub + Dex); no legacy oidc-* flags |
+| 17 | `projected-sa-tokens` | hub→us | **v2**: Hub OIDC discovery; binding-controller projected token volume with correct audience; spoke trust setup |
+| 18 | `admission-guardrails` | us | **v2**: Three ValidatingAdmissionPolicy resources exist and are bound; platform-admin RBAC present
+| 19 | `multi-tenant-isolation` | hub→us | Cross-tenant isolation (acme-corp | globex-inc)
+| 20 | `tenant-rbac-roles` | hub→us | Admin/dev/analyst role enforcement per tenant
+| 21 | `platform-admin-access` | hub | Platform admin bypasses admission policies
 
 ---
 
@@ -78,8 +83,14 @@ graph TD
     J --> K["11: Rotating Trust"]
     K --> L["12: Dashboard Metrics"]
     L --> M["13: Tenant Isolation"]
-    M --> N["14: Token Rotation Proof"]
-    N --> O["15: Dashboard Data"]
+    M --> N["15: Dashboard Data"]
+    N --> O["16: Auth Configuration"]
+    O --> P["17: Projected SA Tokens"]
+    P --> Q["18: Admission Guardrails"]
+    M --> R["19: Multi-Tenant Isolation"]
+    R --> S["20: Tenant RBAC Roles"]
+    Q --> S
+    Q --> T["21: Platform Admin Access"]
 
     style A fill:#4caf50,color:#fff
     style B fill:#4caf50,color:#fff
@@ -96,6 +107,11 @@ graph TD
     style M fill:#4caf50,color:#fff
     style N fill:#4caf50,color:#fff
     style O fill:#4caf50,color:#fff
+    style P fill:#4caf50,color:#fff
+    style Q fill:#4caf50,color:#fff
+    style R fill:#4caf50,color:#fff
+    style S fill:#4caf50,color:#fff
+    style T fill:#4caf50,color:#fff
 ```
 
 Tests are ordered to form a dependency chain: earlier tests deploy resources that later tests depend on.
@@ -105,7 +121,7 @@ Tests are ordered to form a dependency chain: earlier tests deploy resources tha
 ## Running Tests
 
 ```bash
-# Full suite (all 15 tests)
+# Full suite (all 20 tests)
 make validate
 
 # Or directly:
@@ -115,13 +131,13 @@ chainsaw test . --test-dir tests
 # Single test
 chainsaw test . --test-dir tests/10-oidc-trust
 
-# Subset
-chainsaw test . --test-dir tests/13-tenant-isolation --test-dir tests/14-token-rotation-proof --test-dir tests/15-dashboard-data
+# Subset (admission + tenant isolation)
+chainsaw test . --test-dir tests/18-admission-guardrails --test-dir tests/19-multi-tenant-isolation --test-dir tests/20-tenant-rbac-roles --test-dir tests/21-platform-admin-access
 ```
 
 ## In-Cluster Continuous Testing
 
-The **Chainsaw CronJob** (`chart/hub/templates/chainsaw-cronjob.yaml`) runs the full suite every 2 minutes and pushes JSON results to Loki. The **Chainsaw Results** Grafana dashboard renders pass/fail trends over time.
+The **Chainsaw CronJob** (`chart/infrastructure/templates/chainsaw-cronjob.yaml`) runs the full suite every 2 minutes and pushes JSON results to Loki. The **Chainsaw Results** Grafana dashboard renders pass/fail trends over time.
 
 ```mermaid
 sequenceDiagram
@@ -145,7 +161,7 @@ sequenceDiagram
 | **kubectl apply + assert** | 04, 05, 06, 13 | Apply a resource, assert it becomes Ready |
 | **exec into pod** | 03 | `kubectl rollout status` inside cluster |
 | **curl + JSON parse** | 09, 10, 12, 15 | Port-forward, HTTP query, JSON assertion |
-| **port-forward for distroless** | 12, 14, 15 | No `wget`/`curl` in container → use host port-forward |
+| **port-forward for distroless** | 12, 15 | No `wget`/`curl` in container → use host port-forward |
 | **multi-cluster script** | 06, 10, 11, 13 | Hub-side apply, spoke-side assert across kubeconfigs |
 | **py inline URL encode** | 12, 15 | PromQL queries with special chars via `python3 urllib.parse.quote()` |
 
@@ -164,8 +180,13 @@ sequenceDiagram
 | `tests/e2e/tests/08-chainsaw-cronjob/` | CronJob test |
 | `tests/e2e/tests/09-ingress-log-shipping/` | Ingress + log shipping test |
 | `tests/e2e/tests/10-oidc-trust/` | OIDC trust test |
-| `tests/e2e/tests/11-rotating-trust/` | Rotating trust test |
+| `tests/e2e/tests/11-rotating-trust/` | v2 rotating trust test (projected SA volumes) |
 | `tests/e2e/tests/12-dashboard-metrics/` | Dashboard metrics test |
 | `tests/e2e/tests/13-tenant-isolation/` | Tenant isolation test |
-| `tests/e2e/tests/14-token-rotation-proof/` | Token rotation proof test |
 | `tests/e2e/tests/15-dashboard-data/` | Dashboard data rendering test |
+| `tests/e2e/tests/16-auth-configuration/` | AuthenticationConfiguration validation (v2) |
+| `tests/e2e/tests/17-projected-sa-tokens/` | Projected SA token cross-cluster flow (v2) |
+| `tests/e2e/tests/18-admission-guardrails/` | ValidatingAdmissionPolicy enforcement (v2)
+| `tests/e2e/tests/19-multi-tenant-isolation/` | Cross-tenant isolation test (acme-corp \| globex-inc)
+| `tests/e2e/tests/20-tenant-rbac-roles/` | Admin/dev/analyst role enforcement per tenant
+| `tests/e2e/tests/21-platform-admin-access/` | Platform admin bypasses admission policies | |

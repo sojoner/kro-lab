@@ -25,13 +25,13 @@ sequenceDiagram
         P->>Hub: Get Secret us-kubeconfig
         Hub-->>P: {kubeconfig bytes}
 
-        P->>P: SHA256(kubeconfig)
-        alt first time or hash changed
+        P->>P: clusterKey(Host, CAData)
+        alt first time or host/CA changed
             P->>P: parse REST config from kubeconfig
             P->>MGR: Engage(ctx, "us", cluster)
             MGR->>MGR: start informers, caches
             MGR-->>P: engaged
-        else hash unchanged
+        else key unchanged
             P->>P: skip (no-op)
         end
     end
@@ -54,25 +54,26 @@ Plus the convention-based `Run(ctx, mgr)` method for cluster discovery.
 
 1. **Discover** — `hubClient.List(ctx, &clusterProfiles)` at configured interval (default 10s)
 2. **Locate kubeconfig** — Look up `<name>-kubeconfig` Secret in same namespace as ClusterProfile
-3. **Change detection** — SHA256-hash kubeconfig bytes; skip if unchanged
-4. **Disengage old** — If hash changed, cancel old cluster's context
-5. **Build cluster** — Parse kubeconfig → `cluster.New(restConfig, scheme)`
+3. **Change detection** — Compute clusterKey from server URL + CA certificate data; skip if unchanged (v2: token changes are irrelevant — tokens come from BearerTokenFile, not kubeconfig)
+4. **Disengage old** — If clusterKey changed (server URL or CA), cancel old cluster's context
+5. **Build cluster** — Parse kubeconfig → `cluster.New(restConfig, scheme)`, override auth with `BearerTokenFile`
 6. **Engage** — `mgr.Engage(ctx, name, cl)` registers the spoke
 7. **Replay indexes** — Replay any registered `IndexField` calls against the new cluster
 8. **Cleanup** — Remove clusters whose ClusterProfile has been deleted
 
-### Change Detection & Token Rotation (`provider.go:168-177`)
+### Change Detection (v2: clusterKey)
 
-The provider detects kubeconfig changes by hashing Secret data. This is how the **token-rotator** integrates:
+In v2, the provider uses a clusterKey (SHA256 of `Host + CAData`) instead of the full kubeconfig hash. This means:
 
-- Token-rotator writes new tokens to `us-access-kubeconfig` Secret every 5 minutes
-- Provider detects SHA256 change on next poll cycle
-- Disengages old cluster, engages new one with fresh credentials
-- **Controllers automatically use new credentials** — no restart needed
+- **Server URL change** → disengage + re-engage with new credentials
+- **CA certificate change** → disengage + re-engage
+- **Token change** → **no-op** (tokens come from `BearerTokenFile`, Kubelet-managed)
+
+This decouples credential rotation from cluster engagement, eliminating the tight coupling between the token-rotator and the multicluster provider.
 
 ## ClusterProfile CRD
 
-Defined in `deploy/platform-mvp/chart/hub/templates/fleet.yaml`:
+Defined in `deploy/platform-mvp/chart/hub-services/templates/fleet.yaml`:
 
 ```yaml
 apiVersion: multicluster.x-k8s.io/v1alpha1
@@ -85,7 +86,7 @@ The `status` subresource includes:
 
 | Field | Purpose |
 |-------|---------|
-| `conditions[type=ControlPlaneHealthy]` | Gated by token-rotator; rotation only proceeds when `True` |
+| `conditions[type=ControlPlaneHealthy]` | v1: Gated by token-rotator; v2: no longer required (auth via BearerTokenFile + Kubelet) |
 | `accessProviders[*].cluster` | Contains `server` URL and `certificateAuthorityData` for kubeconfig assembly |
 
 In production, a control plane health controller would populate `ControlPlaneHealthy` based on actual spoke API reachability. For E2E testing, this is patched manually.
@@ -101,6 +102,6 @@ In production, a control plane health controller would populate `ControlPlaneHea
 
 | File | Purpose |
 |------|---------|
-| `providers/cluster-inventory-api/provider.go` | Provider: poll loop, engagement, SHA256 change detection |
-| `deploy/platform-mvp/chart/hub/templates/fleet.yaml` | ClusterProfile/us manifest |
+| `providers/cluster-inventory-api/provider.go` | Provider: poll loop, engagement, clusterKey change detection (Host+CAData) |
+| `deploy/platform-mvp/chart/hub-services/templates/fleet.yaml` | ClusterProfile/us manifest |
 | `platform-mvp/binding-controller/main.go:123-176` | `staticProvider` — dev fallback (single cluster via kubeconfig flag) |

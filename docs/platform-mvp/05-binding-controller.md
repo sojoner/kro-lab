@@ -18,7 +18,7 @@ sequenceDiagram
     RWR->>BC: Watch Event (Create/Update)
 
     BC->>RWR: Read spec.region → "us"
-    BC->>RWR: Read spec.tenant.id → "acme-corp" (optional)
+    BC->>RWR: Read label platform.example.com/tenant → "acme-corp" (optional)
     BC->>RWR: Read spec.message → "hello"
 
     BC->>BC: tenantNamespace() → "acme-corp" or "default"
@@ -65,20 +65,22 @@ This two-controller pattern ensures the hub always reflects the true state of sp
 
 ## Tenant Isolation
 
-The `tenantNamespace()` function (`controller/reconciler.go:98-104`) determines the spoke-side namespace:
+The `tenantNamespace()` function (`controller/reconciler.go:98-106`) determines the spoke-side namespace by reading the `platform.example.com/tenant` label:
 
 ```go
 func tenantNamespace(obj *unstructured.Unstructured) string {
-    tenantID, found, _ := unstructured.NestedString(obj.Object, "spec", "tenant", "id")
-    if found && tenantID != "" {
-        return tenantID
+    labels := obj.GetLabels()
+    if labels != nil {
+        if tenantID, ok := labels["platform.example.com/tenant"]; ok && tenantID != "" {
+            return tenantID
+        }
     }
     return widgetNamespace  // "default"
 }
 ```
 
-| Scenario | `spec.tenant.id` | Widget Namespace |
-|----------|------------------|-------------------|
+| Scenario | `platform.example.com/tenant` label | Widget Namespace |
+|----------|--------------------------------------|-------------------|
 | Multi-tenant | `acme-corp` | `acme-corp` |
 | No tenant (legacy) | (absent) | `default` |
 
@@ -108,7 +110,7 @@ The local mode's `staticProvider` is defined at `main.go:123-176`. It directly p
 The binding-controller can optionally use Dex-issued tokens instead of static kubeconfigs for spoke access. This is enabled via `values.bindingController.dex.enabled=true` and uses the `dex-auth-plugin` exec credential plugin (`platform-mvp/dex-auth-plugin/main.go`):
 
 ```yaml
-# chart/hub/templates/binding-controller.yaml:84-95
+# chart/hub-services/templates/binding-controller.yaml:84-95
 initContainers:
   - name: dex-auth-plugin
     image: sojoner/dex-auth-plugin:dev
@@ -134,4 +136,4 @@ The plugin implements `client.authentication.k8s.io/v1` ExecCredential protocol,
 | `platform-mvp/binding-controller/controller/reconciler_test.go` | Unit tests |
 | `platform-mvp/binding-controller/Dockerfile` | Multi-stage Docker build |
 | `platform-mvp/dex-auth-plugin/main.go` | Exec credential plugin (optional Dex auth) |
-| `chart/hub/templates/binding-controller.yaml` | Deployment + RBAC (SA, ClusterRole, ClusterRoleBinding, Service) |
+| `chart/hub-services/templates/binding-controller.yaml` | Deployment + RBAC (SA, ClusterRole, ClusterRoleBinding, Service) |

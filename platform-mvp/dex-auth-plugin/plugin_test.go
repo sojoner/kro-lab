@@ -99,7 +99,7 @@ func TestRun_SuccessfulTokenExchange(t *testing.T) {
 		t.Fatalf("invalid expiration timestamp: %v", err)
 	}
 	expectedMin := time.Now().Add(time.Duration(900-30) * time.Second)
-	if expiry.Before(expectedMin.Add(-2 * time.Second)) || expiry.After(expectedMin.Add(2*time.Second)) {
+	if expiry.Before(expectedMin.Add(-2*time.Second)) || expiry.After(expectedMin.Add(2*time.Second)) {
 		t.Errorf("expected expiration around %v, got %v", expectedMin, expiry)
 	}
 }

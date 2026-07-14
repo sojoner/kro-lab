@@ -1,9 +1,10 @@
 // gen-jwt generates test keys and a pre-signed JWT for rotating-trust E2E tests.
 // Usage: go run gen-jwt.go
 // Output:
-//   trust.jwks  — JWKS format public key (for dex-auth-plugin --trust-jwks)
-//   test.jwt    — pre-signed JWT (valid for 1 year, for static test assertions)
-//   test-key.pem — RSA private key
+//
+//	trust.jwks  — JWKS format public key (for dex-auth-plugin --trust-jwks)
+//	test.jwt    — pre-signed JWT (valid for 1 year, for static test assertions)
+//	test-key.pem — RSA private key
 package main
 
 import (
@@ -59,11 +60,11 @@ func main() {
 
 	// Generate pre-signed JWT
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-		"iss": "https://dex.monitoring.svc:5556/dex",
-		"sub": "chainsaw-test-client",
-		"aud": "kube-apiserver",
-		"exp": time.Now().Add(365 * 24 * time.Hour).Unix(),
-		"iat": time.Now().Unix(),
+		"iss":    "https://dex.monitoring.svc:5556/dex",
+		"sub":    "chainsaw-test-client",
+		"aud":    "kube-apiserver",
+		"exp":    time.Now().Add(365 * 24 * time.Hour).Unix(),
+		"iat":    time.Now().Unix(),
 		"groups": []string{"test-tenant"},
 	})
 	token.Header["kid"] = "test-key-001"

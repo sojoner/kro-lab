@@ -27,21 +27,15 @@ const (
 	ClusterProfileAPIVersion = "multicluster.x-k8s.io/v1alpha1"
 	ClusterProfileKind       = "ClusterProfile"
 
-	// KubeconfigSecretSuffix is appended to a ClusterProfile's name to find
-	// its kubeconfig Secret in the same namespace. The real ClusterProfile
-	// CRD's spec is a strict schema (clusterManager/displayName only, no
-	// room for a custom secretRef field), so the kubeconfig is located by
-	// naming convention instead of a spec reference.
 	KubeconfigSecretSuffix = "-kubeconfig"
+
+	DefaultTokenDir = "/var/run/secrets/tokens"
 )
 
 var ClusterProfileGVK = schema.FromAPIVersionAndKind(ClusterProfileAPIVersion, ClusterProfileKind)
 
 var _ multicluster.Provider = (*Provider)(nil)
 
-// indexRegistration records an IndexField call so it can be replayed against
-// clusters engaged after the call was made, per the Provider.IndexField
-// contract ("current and future" clusters).
 type indexRegistration struct {
 	obj          client.Object
 	field        string
@@ -49,34 +43,57 @@ type indexRegistration struct {
 }
 
 // Provider discovers spoke clusters from ClusterProfile objects on the hub
-// and engages the multicluster-runtime manager with a real cluster.Cluster
-// for each one it finds. It tracks kubeconfig SHA256 hashes and re-engages
-// clusters when the kubeconfig Secret changes, enabling credential rotation.
+// and engages the multicluster-runtime manager with a cluster.Cluster for
+// each one it finds.
+//
+// In v2, cluster authentication uses projected ServiceAccount tokens
+// (BearerTokenFile) mounted from the binding-controller pod instead of
+// static tokens from the kubeconfig Secret. The kubeconfig Secret is still
+// read for server address and CA certificate, but the auth section is
+// overridden with the projected token file path.
+//
+// Token files follow the convention: {tokenDir}/{clusterName}-token
+// (e.g., /var/run/secrets/tokens/us-token).
 type Provider struct {
 	scheme       *runtime.Scheme
 	hubClient    client.Client
 	pollInterval time.Duration
 	newCluster   func(cfg *rest.Config, scheme *runtime.Scheme) (cluster.Cluster, error)
+	tokenDir     string
 
-	mu               sync.RWMutex
-	clusters         map[string]cluster.Cluster
-	cancelFns        map[string]context.CancelFunc
-	kubeconfigHashes map[string]string
-	indexes          []indexRegistration
+	mu        sync.RWMutex
+	clusters  map[string]cluster.Cluster
+	cancelFns map[string]context.CancelFunc
+	indexes   []indexRegistration
+
+	// clusterKeys tracks server+CA identity so the provider can detect
+	// when a spoke is re-created with different endpoints (e.g., a kind
+	// cluster was destroyed and re-created) and re-engage it.
+	clusterKeys map[string]string
 }
 
-// New creates a Provider that polls ClusterProfile objects on the hub every
-// pollInterval to discover spoke clusters.
 func New(scheme *runtime.Scheme, hubClient client.Client, pollInterval time.Duration) *Provider {
+	return NewWithTokenDir(scheme, hubClient, pollInterval, DefaultTokenDir)
+}
+
+func NewWithTokenDir(scheme *runtime.Scheme, hubClient client.Client, pollInterval time.Duration, tokenDir string) *Provider {
 	return &Provider{
-		scheme:           scheme,
-		hubClient:        hubClient,
-		pollInterval:     pollInterval,
-		newCluster:       newRealCluster,
-		clusters:         map[string]cluster.Cluster{},
-		cancelFns:        map[string]context.CancelFunc{},
-		kubeconfigHashes: map[string]string{},
+		scheme:       scheme,
+		hubClient:    hubClient,
+		pollInterval: pollInterval,
+		newCluster:   newRealCluster,
+		tokenDir:     tokenDir,
+		clusters:     map[string]cluster.Cluster{},
+		cancelFns:    map[string]context.CancelFunc{},
+		clusterKeys:  map[string]string{},
 	}
+}
+
+// SetClusterFactory overrides the cluster creation function. Used for
+// testing where real cluster.New (which creates a client-go client) can't
+// connect to a real API server.
+func (p *Provider) SetClusterFactory(fn func(cfg *rest.Config, scheme *runtime.Scheme) (cluster.Cluster, error)) {
+	p.newCluster = fn
 }
 
 func newRealCluster(cfg *rest.Config, scheme *runtime.Scheme) (cluster.Cluster, error) {
@@ -85,8 +102,6 @@ func newRealCluster(cfg *rest.Config, scheme *runtime.Scheme) (cluster.Cluster, 
 	})
 }
 
-// Get returns a cluster for the given identifying cluster name. Returns
-// ErrClusterNotFound if the cluster has not been engaged.
 func (p *Provider) Get(_ context.Context, clusterName string) (cluster.Cluster, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -96,8 +111,6 @@ func (p *Provider) Get(_ context.Context, clusterName string) (cluster.Cluster, 
 	return nil, multicluster.ErrClusterNotFound
 }
 
-// IndexField indexes the given object by the given field on all engaged
-// clusters, current and future.
 func (p *Provider) IndexField(ctx context.Context, obj client.Object, field string, extractValue client.IndexerFunc) error {
 	p.mu.Lock()
 	p.indexes = append(p.indexes, indexRegistration{obj: obj, field: field, extractValue: extractValue})
@@ -115,8 +128,6 @@ func (p *Provider) IndexField(ctx context.Context, obj client.Object, field stri
 	return nil
 }
 
-// Run starts the provider and blocks, polling ClusterProfile objects on the
-// hub and engaging mgr with a cluster.Cluster for each one discovered.
 func (p *Provider) Run(ctx context.Context, mgr mcmanager.Manager) error {
 	p.discover(ctx, mgr)
 
@@ -140,43 +151,32 @@ func (p *Provider) discover(ctx context.Context, mgr mcmanager.Manager) {
 		return
 	}
 
-	// Track which ClusterProfiles exist in this discovery cycle so we can
-	// detect deletions (clusters that were engaged but no longer have a
-	// corresponding ClusterProfile).
 	seen := make(map[string]bool, len(cps.Items))
 
 	for _, cp := range cps.Items {
 		name := cp.GetName()
 		seen[name] = true
 
-		secretName := name + KubeconfigSecretSuffix
-		secretNamespace := cp.GetNamespace()
-
-		secret := &corev1.Secret{}
-		if err := p.hubClient.Get(ctx, types.NamespacedName{
-			Name:      secretName,
-			Namespace: secretNamespace,
-		}, secret); err != nil {
-			continue
+		clusterKey, err := p.readClusterKey(ctx, &cp)
+		if err != nil {
+			p.mu.RLock()
+			_, engaged := p.clusters[name]
+			p.mu.RUnlock()
+			if engaged {
+				continue
+			}
+			clusterKey = ""
 		}
-
-		kubeconfigBytes, ok := secret.Data["value"]
-		if !ok {
-			continue
-		}
-
-		currentHash := hashBytes(kubeconfigBytes)
 
 		p.mu.RLock()
 		_, engaged := p.clusters[name]
-		prevHash := p.kubeconfigHashes[name]
+		prevKey := p.clusterKeys[name]
 		p.mu.RUnlock()
 
-		if engaged && currentHash == prevHash {
+		if engaged && clusterKey == prevKey {
 			continue
 		}
 
-		// Disengage the old cluster if kubeconfig changed.
 		if engaged {
 			p.disengageCluster(name)
 		}
@@ -192,7 +192,7 @@ func (p *Provider) discover(ctx context.Context, mgr mcmanager.Manager) {
 		p.mu.Lock()
 		p.clusters[name] = cl
 		p.cancelFns[name] = cancel
-		p.kubeconfigHashes[name] = currentHash
+		p.clusterKeys[name] = clusterKey
 		indexes := make([]indexRegistration, len(p.indexes))
 		copy(indexes, p.indexes)
 		p.mu.Unlock()
@@ -206,7 +206,6 @@ func (p *Provider) discover(ctx context.Context, mgr mcmanager.Manager) {
 		}
 	}
 
-	// Remove clusters whose ClusterProfile has been deleted.
 	p.mu.RLock()
 	engagedNames := make([]string, 0, len(p.clusters))
 	for name := range p.clusters {
@@ -221,36 +220,58 @@ func (p *Provider) discover(ctx context.Context, mgr mcmanager.Manager) {
 	}
 }
 
-// disengageCluster cancels the cluster's context and removes it from the
-// provider's tracking maps. Safe to call multiple times for the same cluster.
 func (p *Provider) disengageCluster(name string) {
 	p.mu.Lock()
-	cl, ok := p.clusters[name]
+	_, ok := p.clusters[name]
 	if !ok {
 		p.mu.Unlock()
 		return
 	}
 	delete(p.clusters, name)
-	delete(p.kubeconfigHashes, name)
+	delete(p.clusterKeys, name)
 	if cancel, exists := p.cancelFns[name]; exists {
 		cancel()
 		delete(p.cancelFns, name)
 	}
 	p.mu.Unlock()
-
-	// Give the cluster a moment to drain, but don't block if not needed.
-	// The cluster's Start() will return when the context is cancelled.
-	_ = cl
 }
 
-// hashBytes returns the SHA256 hex digest of data, used to detect kubeconfig
-// Secret changes without storing the raw kubeconfig in memory.
-func hashBytes(data []byte) string {
+// readClusterKey computes a stable identity hash from the kubeconfig
+// Secret's server and CA fields. This is used to detect when a spoke
+// cluster's endpoint changes (e.g., after a kind cluster recreation).
+func (p *Provider) readClusterKey(ctx context.Context, cp *unstructured.Unstructured) (string, error) {
+	secretName := cp.GetName() + KubeconfigSecretSuffix
+	secretNamespace := cp.GetNamespace()
+
+	secret := &corev1.Secret{}
+	if err := p.hubClient.Get(ctx, types.NamespacedName{
+		Name:      secretName,
+		Namespace: secretNamespace,
+	}, secret); err != nil {
+		return "", err
+	}
+
+	kubeconfigBytes, ok := secret.Data["value"]
+	if !ok {
+		return "", fmt.Errorf("kubeconfig secret %s/%s missing 'value' key", secretNamespace, secretName)
+	}
+
+	cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfigBytes)
+	if err != nil {
+		return "", err
+	}
+
 	h := sha256.New()
-	h.Write(data)
-	return hex.EncodeToString(h.Sum(nil))
+	h.Write([]byte(cfg.Host))
+	h.Write(cfg.TLSClientConfig.CAData)
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// clusterFromClusterProfile builds a cluster.Cluster for the given
+// ClusterProfile. It reads the kubeconfig Secret to extract server address
+// and CA certificate, then overrides the auth mechanism with a projected
+// ServiceAccount token file (BearerTokenFile) sourced from the
+// binding-controller pod's projected volume.
 func (p *Provider) clusterFromClusterProfile(ctx context.Context, cp *unstructured.Unstructured) (cluster.Cluster, error) {
 	secretName := cp.GetName() + KubeconfigSecretSuffix
 	secretNamespace := cp.GetNamespace()
@@ -275,6 +296,14 @@ func (p *Provider) clusterFromClusterProfile(ctx context.Context, cp *unstructur
 	if err != nil {
 		return nil, fmt.Errorf("parsing kubeconfig for cluster %s: %w", cp.GetName(), err)
 	}
+
+	tokenFile := fmt.Sprintf("%s/%s-token", p.tokenDir, cp.GetName())
+	cfg.BearerToken = ""
+	cfg.BearerTokenFile = tokenFile
+	cfg.Username = ""
+	cfg.Password = ""
+	cfg.AuthProvider = nil
+	cfg.ExecProvider = nil
 
 	cl, err := p.newCluster(cfg, p.scheme)
 	if err != nil {

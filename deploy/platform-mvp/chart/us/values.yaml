@@ -10,6 +10,32 @@ widgetOperator:
     requests: { cpu: 20m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }
 
+authConfiguration:
+  enabled: true
+  hubIssuer:
+    enabled: true
+    url: "https://hub-control-plane:6443"
+    audience: "https://us-control-plane:6443"
+    claimValidationRules:
+      - expression: 'claims.sub.startsWith("system:serviceaccount:")'
+        message: "Only ServiceAccounts from the hub cluster may authenticate."
+    claimMappings:
+      username:
+        claim: sub
+        prefix: "hub:"
+  dexIssuer:
+    enabled: true
+    url: "https://bm4080.taildf7067.ts.net/dex"
+    audiences:
+      - kubernetes
+    claimMappings:
+      username:
+        claim: sub
+        prefix: "dex:"
+      groups:
+        claim: groups
+        prefix: "dex:"
+
 oidcVerifier:
   enabled: true
   replicas: 1
@@ -36,3 +62,16 @@ oidcVerifier:
   resources:
     requests: { cpu: 10m, memory: 16Mi }
     limits: { cpu: 50m, memory: 64Mi }
+
+admissionPolicies:
+  enabled: true
+  platformAdminSubjects:
+    - kind: Group
+      name: dex:platform-admin
+  additionalProtectedNamespaces: []
+
+tenants:
+  - id: acme-corp
+    dexGroups: ["acme-corp-admin", "acme-corp-developer", "acme-corp-analyst"]
+  - id: globex-inc
+    dexGroups: ["globex-inc-admin", "globex-inc-developer", "globex-inc-analyst"]
