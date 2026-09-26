@@ -5,4 +5,5 @@ echo "Destroying clusters..."
 kind delete cluster --name hub || true
 kind delete cluster --name us || true
 rm -f "$(dirname "${BASH_SOURCE[0]}")/kubeconfig-us-internal"
+rm -rf /tmp/kro-us-auth
 echo "Clusters destroyed."

@@ -1,5 +1,7 @@
 # Phase 7 — Token Rotator
 
+> **REMOVED (2026-07-14):** The token-rotator code, Helm template, and all wiring were deleted from the repo — it is no longer buildable or deployable. Controller authentication uses projected ServiceAccount tokens. This document is retained for historical reference only; file paths and line numbers below no longer resolve.
+
 The token-rotator (`platform-mvp/token-rotator/`) is a hub-side controller that continuously refreshes spoke cluster kubeconfigs using Dex-issued OIDC tokens. This decouples spoke access from long-lived static credentials and enables **zero-touch credential rotation**.
 
 ---
@@ -80,7 +82,7 @@ The `cluster-inventory-api` provider (`providers/cluster-inventory-api/provider.
 
 ## Metrics
 
-Exposed on `:8080/metrics`, scraped by Prometheus every 15s via ServiceMonitor (`chart/hub/templates/servicemonitors.yaml:21-36`).
+Exposed on `:8080/metrics`, scraped by Prometheus every 15s via ServiceMonitor (`chart/hub-services/templates/servicemonitors.yaml:21-36`).
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
@@ -116,12 +118,11 @@ sequenceDiagram
 ```
 
 **Test coverage**:
-- `11-rotating-trust` — Verifies Dex `trust-jwks` ConfigMap is present and mounted by oidc-verifier
-- `14-token-rotation-proof` — Verifies token-rotator produces `token_rotation_success` metrics with `result=success`
+- `11-rotating-trust` — v2: Verifies projected SA token volume in binding-controller + token-rotator disabled + Dex retained for human OIDC
 
 ## Deployment
 
-Packaged in the hub Helm chart at `chart/hub/templates/token-rotator.yaml`:
+Packaged in the hub Helm chart at `chart/hub-services/templates/token-rotator.yaml`:
 
 ```yaml
 # Lines 1-85: ServiceAccount + ClusterRole + ClusterRoleBinding + Deployment + Service
@@ -132,7 +133,7 @@ Key RBAC permissions:
 - `get/create/update` Secrets (default namespace)
 - `get/list/watch` Deployments (for health status)
 
-Values configuration (`chart/hub/values.yaml:73-87`):
+Values configuration (`chart/infrastructure/values.yaml:73-87`):
 
 ```yaml
 tokenRotator:

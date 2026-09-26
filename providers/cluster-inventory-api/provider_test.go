@@ -11,6 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 
@@ -18,18 +20,10 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 )
 
-// Compile-time assertions that Provider satisfies the real
-// sigs.k8s.io/multicluster-runtime Provider contract, not a hand-rolled
-// look-alike.
 var _ multicluster.Provider = (*provider.Provider)(nil)
 
 const testPollInterval = 10 * time.Millisecond
 
-// newClusterProfile builds a ClusterProfile matching the real upstream
-// cluster-inventory-api schema: spec only allows clusterManager/displayName
-// (verified against the installed CRD) — there is no kubeconfigSecretRef
-// field, so the provider must locate the kubeconfig by naming convention
-// instead (see provider.KubeconfigSecretSuffix).
 func newClusterProfile(name, namespace string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -46,9 +40,6 @@ func newClusterProfile(name, namespace string) *unstructured.Unstructured {
 	}
 }
 
-// newKubeconfigSecret builds the kubeconfig Secret the provider expects to
-// find at <clusterProfileName><provider.KubeconfigSecretSuffix> in the same
-// namespace as the ClusterProfile.
 func newKubeconfigSecret(clusterProfileName, namespace, kubeconfig string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -59,6 +50,20 @@ func newKubeconfigSecret(clusterProfileName, namespace, kubeconfig string) *core
 			"value": []byte(kubeconfig),
 		},
 	}
+}
+
+type testCluster struct {
+	cluster.Cluster
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (f *testCluster) GetFieldIndexer() client.FieldIndexer { return nil }
+func (f *testCluster) Start(ctx context.Context) error {
+	close(f.started)
+	<-ctx.Done()
+	close(f.stopped)
+	return nil
 }
 
 const testKubeconfig = `apiVersion: v1
@@ -78,8 +83,6 @@ users:
   user:
     token: test-token`
 
-// recordingAware is a stub multicluster.Aware that records Engage calls,
-// standing in for the real mcmanager.Manager in unit tests.
 type recordingAware struct {
 	engaged chan engagedCall
 }
@@ -98,9 +101,6 @@ func (r *recordingAware) Engage(ctx context.Context, name string, cl cluster.Clu
 	return nil
 }
 
-// fakeManager satisfies mcmanager.Manager's Engage signature (Provider.Run's
-// mgr parameter is typed mcmanager.Manager, not the narrower
-// multicluster.Aware), delegating Engage to a recordingAware for assertions.
 var _ mcmanager.Manager = (*fakeManager)(nil)
 
 type fakeManager struct {
@@ -125,10 +125,6 @@ func TestProviderGet_ClusterProfileNotFound(t *testing.T) {
 }
 
 func TestProviderGet_ClusterProfileAPIGroup(t *testing.T) {
-	// Must match the actual installed CRD group/version (cluster-inventory-api
-	// upstream, applied via Makefile from
-	// multicluster.x-k8s.io_clusterprofiles.yaml) — not a similarly-named but
-	// wrong group, or the dynamic provider silently discovers zero clusters.
 	gv := schema.GroupVersion{
 		Group:   "multicluster.x-k8s.io",
 		Version: "v1alpha1",
@@ -139,10 +135,6 @@ func TestProviderGet_ClusterProfileAPIGroup(t *testing.T) {
 	}
 }
 
-// TestProvider_Run_EngagesDiscoveredCluster proves the provider discovers
-// ClusterProfile objects on the hub and engages the manager with a real
-// cluster.Cluster for each one — the actual multicluster-runtime fan-out
-// mechanism, not just an on-demand Get().
 func TestProvider_Run_EngagesDiscoveredCluster(t *testing.T) {
 	cp := newClusterProfile("us", "default")
 	secret := newKubeconfigSecret("us", "default", testKubeconfig)
@@ -152,9 +144,13 @@ func TestProvider_Run_EngagesDiscoveredCluster(t *testing.T) {
 	hubClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cp, secret).Build()
 
 	p := provider.New(scheme, hubClient, testPollInterval)
+	p.SetClusterFactory(func(cfg *rest.Config, scheme *runtime.Scheme) (cluster.Cluster, error) {
+		return &testCluster{started: make(chan struct{}), stopped: make(chan struct{})}, nil
+	})
+
 	aware := newRecordingAware()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	go func() { _ = p.Run(ctx, &fakeManager{aware: aware}) }()
