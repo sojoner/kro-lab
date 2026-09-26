@@ -96,9 +96,11 @@ func (r *RegionalWidgetReconciler) Reconcile(ctx context.Context, req reconcile.
 }
 
 func tenantNamespace(obj *unstructured.Unstructured) string {
-	tenantID, found, _ := unstructured.NestedString(obj.Object, "spec", "tenant", "id")
-	if found && tenantID != "" {
-		return tenantID
+	labels := obj.GetLabels()
+	if labels != nil {
+		if tenantID, ok := labels["platform.example.com/tenant"]; ok && tenantID != "" {
+			return tenantID
+		}
 	}
 	return widgetNamespace
 }

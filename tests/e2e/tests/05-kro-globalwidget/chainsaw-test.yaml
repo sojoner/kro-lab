@@ -24,6 +24,8 @@ spec:
           metadata:
             name: e2e-test-widget
             namespace: default
+            labels:
+              platform.example.com/tenant: default
           spec:
             regions: [us]
             message: "hello from e2e"

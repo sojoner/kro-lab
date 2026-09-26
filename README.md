@@ -10,6 +10,14 @@ all running locally on `kind`.
 A binding controller (multicluster-runtime) fans expanded intents out to a spoke
 cluster running a trivial widget-operator. No cloud dependency.
 
+## Why This Architecture
+
+The "widget" itself is a placeholder — what's being validated is the pattern underneath, and it's meant to hold up past a single kind demo:
+
+- **Scales out without code changes.** Adding a region is a `ClusterProfile` + kubeconfig Secret + spoke deployment. The hub-side logic (Kro RGD, binding-controller, provider) resolves cluster identity generically through `mgr.GetCluster(ctx, region)` — no per-region branches to write or maintain. See [`docs/platform-mvp/99-extending-to-eu-asia.md`](docs/platform-mvp/99-extending-to-eu-asia.md).
+- **Tenancy is data, not schema.** A tenant is a `platform.example.com/tenant` label value, not a CRD field or a per-tenant code path. Onboarding a tenant means adding a namespace + 3 RoleBindings (admin/developer/analyst) in `values.yaml`. See [`docs/platform-mvp/09-multi-tenancy.md`](docs/platform-mvp/09-multi-tenancy.md).
+- **Auth pattern: split identity, least privilege, fail closed.** Controllers authenticate with audience-bound, Kubelet-rotated projected ServiceAccount tokens — no static credentials to leak or rotate by hand. Humans authenticate separately via Dex OIDC. Each identity is authorized minimally (the controller's spoke RBAC is scoped to `widgets` only), the provider clears the fallback TLS cert so a missing token fails the request instead of silently escalating, and `ValidatingAdmissionPolicy` guardrails stop any non-admin identity — controller or human — from touching ClusterRoles or the auth config itself. See [`docs/platform-mvp/10-oidc-trust.md`](docs/platform-mvp/10-oidc-trust.md) and [`docs/design/oidc-trust-v2.md`](docs/design/oidc-trust-v2.md).
+
 ## Architecture
 
 ```
@@ -153,13 +161,14 @@ chainsaw test tests/e2e --test 12-dashboard-metrics
 
 | Test | What It Proves |
 |------|----------------|
-| 11-rotating-trust | Token rotator renews Dex tokens per region; kubeconfig Secrets updated |
-| 12-dashboard-metrics | All 4 Grafana dashboards loaded; custom Prometheus metrics for token rotation and multi-tenancy scraped and visible |
+| 11-rotating-trust | **v2**: Projected ServiceAccount tokens provide controller auth; Dex retained for human OIDC |
+| 12-dashboard-metrics | All 3 Grafana dashboards loaded; custom Prometheus metrics for binding-controller scraped and visible |
 
-**What this proves**: Token rotation keeps spoke access fresh without manual
-intervention. Custom metrics (`token_rotator_*`, `binding_controller_reconcile_total`)
-are served by the application, scraped by Prometheus, and visible in Grafana
-dashboards — proving multi-tenancy and token rotation in real time.
+**What this proves**: In v2, cross-cluster trust flows through Kubelet-managed projected
+ServiceAccount tokens. Controller credentials auto-rotate — no token-rotator needed.
+Dex remains for human user identity via OIDC. Custom metrics
+(`binding_controller_reconcile_total`) are served by the application, scraped by
+Prometheus, and visible in Grafana dashboards.
 
 ## Development Workflow (TDD)
 
@@ -187,22 +196,25 @@ make test         # must still PASS
 | Target | Description |
 |--------|-------------|
 | `make all` | Full loop: lint → test → build → deploy → validate |
-| `make test` | Run all unit tests (includes oidc-verifier) |
+| `make test` | Run all unit tests (5 packages) |
 | `make test-race` | Unit tests with race detector |
 | `make test-cover` | Unit tests with coverage profiles |
-| `make lint` | go vet + gofmt check (incl. oidc-verifier) |
+| `make lint` | go vet + gofmt check |
 | `make lint-fix` | Auto-fix formatting + go vet |
 | `make tdd-lint` | Pre-change lint baseline |
-| `make build` | Build binding-controller binary |
-| `make oidc-verifier-image` | Build + load oidc-verifier Docker image |
-| `make deploy` | Full deployment (clusters + us + hub) |
-| `make deploy-us` | Install widget-operator + oidc-verifier on us |
-| `make deploy-hub` | Install LGTM + Dex + cert-manager + Kro + Flux on hub |
-| `make validate` | Run all Chainsaw E2E tests (1-12) |
-| `make validate-p1-p6` | Core platform tests (cluster, fleet, kro, binding) |
-| `make validate-p7-p9` | Observability tests (stack, cronjob, ingress) |
+| `make build-images` | Build all 4 Docker images (parallel) |
+| `make deploy` | Full 4-wave deployment (CRDs → infra + US → hub-services) |
+| `make deploy-wave1` | Wave 1: Install all platform CRDs on hub + us |
+| `make deploy-wave2` | Wave 2: Infrastructure (LGTM + Dex + ingress) on hub |
+| `make deploy-wave3` | Wave 3: Hub controllers + Kro + fleet on hub |
+| `make deploy-wave4` | Wave 4: Widget operator + OIDC verifier on us |
+| `make deploy-cd` | Enable GitOps via Flux CD on hub |
+| `make validate` | Run all 20 Chainsaw E2E tests |
 | `make grafana` | Port-forward Grafana → localhost:3000 |
 | `make grafana-url` | Print dashboard URLs |
+| `make chainsaw-runner` | Build in-cluster Chainsaw CronJob runner |
+| `make install-chainsaw` | Install chainsaw CLI |
+| `make install-flux` | Install flux CLI |
 | `make clean` | Destroy clusters and artifacts |
 | `make clean-artifacts` | Remove bin/ and coverage files only |
 
@@ -211,36 +223,47 @@ make test         # must still PASS
 ```
 .
 ├── deploy/platform-mvp/
-│   ├── chart/hub/                 # Umbrella Helm chart (LGTM + ingress + Dex + cert-manager)
-│   │   ├── templates/             #   dashboards, event-exporter, servicemonitors,
-│   │   │                         #   fleet, chainsaw, kro-rgd, grafana-ingress,
-│   │   │                         #   dex, dex-ingress, cert-manager, binding-controller
-│   │   ├── dashboards/            #   4 Grafana dashboard JSONs
-│   │   ├── Chart.yaml             #   Dependencies: kube-prometheus-stack, loki, promtail,
-│   │   └── values.yaml            #                  ingress-nginx, cert-manager
-│   ├── chart/us/                  # Helm chart (widget-operator + oidc-verifier)
-│   │   ├── templates/widget-operator.yaml
-│   │   ├── templates/oidc-verifier.yaml
-│   │   ├── Chart.yaml
-│   │   └── values.yaml
-│   ├── flux/                      # Flux CD manifests
-│   │   ├── bootstrap/             #   One-time bootstrap (GitRepository, Kustomization)
-│   │   ├── helmrepositories.yaml  #   3 HelmRepository sources
-│   │   └── hub-helmrelease.yaml   #   HelmRelease for hub chart
-│   ├── kind/                      # kind cluster configs
-│   ├── fleet/                     # Original ClusterProfile (for reference)
-│   ├── kro/                       # RGD, RBAC, CRD manifests
-│   └── observability/             # Original LGTM values + Dockerfile.chainsaw-runner
+│   ├── chart/                       # 4-wave Helm chart decomposition
+│   │   ├── crds/                    #   Wave 1: All platform CRDs
+│   │   │   ├── templates/           #     Kro, ClusterProfile, Widget, cert-manager,
+│   │   │   │                       #     Prometheus, RegionalWidgetRequest CRDs
+│   │   │   ├── Chart.yaml
+│   │   │   └── values.yaml
+│   │   ├── infrastructure/          #   Wave 2: Hub shared services
+│   │   │   ├── templates/           #     Dex, cert-manager-issuer, dashboards,
+│   │   │   │                       #     event-exporter, chainsaw-cronjob,
+│   │   │   │                       #     grafana-ingress, dex-ingress
+│   │   │   ├── dashboards/          #     3 Grafana dashboard JSONs
+│   │   │   ├── Chart.yaml           #     Deps: kube-prometheus-stack, loki, promtail,
+│   │   │   ├── e2e-values.yaml      #           ingress-nginx, cert-manager
+│   │   │   └── values.yaml
+│   │   ├── hub-services/            #   Wave 3: Hub controllers + KRO + fleet
+│   │   │   ├── templates/           #     Kro controller, binding-controller,
+│   │   │   │                       #     RGD, fleet, servicemonitors
+│   │   │   ├── Chart.yaml
+│   │   │   ├── e2e-values.yaml
+│   │   │   └── values.yaml
+│   │   └── us/                      #   Wave 4: Spoke chart
+│   │       ├── templates/           #     widget-operator, oidc-verifier,
+│   │       │                       #     admission-policies, tenant-rbac
+│   │       ├── Chart.yaml
+│   │       └── values.yaml
+│   ├── flux/                        # Flux CD manifests
+│   │   ├── bootstrap/               #   One-time bootstrap (GitRepository, Kustomization)
+│   │   ├── helmrepositories.yaml    #   4 HelmRepository sources
+│   │   └── hub-helmrelease.yaml     #   3 HelmRelease resources with dependsOn
+│   ├── kind/                        # kind cluster configs
+│   ├── crds/                        # Pre-fetched CRD sources (cached for chart use)
+│   └── observability/               # Dockerfile.chainsaw-runner
 ├── hack/platform-mvp/             # Shell scripts
 ├── platform-mvp/
 │   ├── binding-controller/        # RegionalWidgetRequest → spoke reconciler (Go)
-│   │   └── controller/            #   Reconciler + tests
 │   ├── widget-operator/           # Trivial spoke operator (Go)
-│   └── oidc-verifier/             # JWKS-based JWT verifier (Go)
+│   ├── oidc-verifier/             # JWKS-based JWT verifier (Go)
+│   └── dex-auth-plugin/           # Dex token acquisition plugin (Go)
 ├── providers/
 │   └── cluster-inventory-api/     # ClusterProfile-backed Provider (Go)
-├── tests/e2e/                     # Chainsaw test suites
-│   ├── tests/                     #   01..12 progressive validation
+├── tests/e2e/                     # Chainsaw test suites (20 tests)
 │   └── .chainsaw.yaml
 ├── docs/platform-mvp/             # Implementation docs per phase (incl. OIDC)
 ├── .claude/                       # AI assistant working docs (plans/specs)

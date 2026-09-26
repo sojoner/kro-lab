@@ -20,11 +20,11 @@ spec:
           metadata:
             name: e2e-test-tenant-acme-us
             namespace: default
+            labels:
+              platform.example.com/tenant: acme-corp
           spec:
             region: us
             message: "tenant isolation e2e test"
-            tenant:
-              id: acme-corp
           RWR
           echo "PASS: RegionalWidgetRequest created with tenant.id=acme-corp"
     cluster: hub

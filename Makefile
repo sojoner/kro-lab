@@ -17,8 +17,10 @@ KIND_US           ?= us
 KIND_HUB_CONFIG   ?= deploy/platform-mvp/kind/kind-hub.yaml
 KIND_US_CONFIG    ?= deploy/platform-mvp/kind/kind-us.yaml
 
-HUB_CHART          ?= deploy/platform-mvp/chart/hub
+HUB_CHART          ?= deploy/platform-mvp/chart/infrastructure
 US_CHART           ?= deploy/platform-mvp/chart/us
+CRDS_CHART         ?= deploy/platform-mvp/chart/crds
+HUBSVC_CHART       ?= deploy/platform-mvp/chart/hub-services
 HELM_TIMEOUT       ?= 15m
 
 INGRESS_HOST       ?= bm4080.taildf7067.ts.net
@@ -40,13 +42,11 @@ BC_DIR             ?= platform-mvp/binding-controller
 WO_DIR             ?= platform-mvp/widget-operator
 OV_DIR             ?= platform-mvp/oidc-verifier
 DAP_DIR            ?= platform-mvp/dex-auth-plugin
-TR_DIR             ?= platform-mvp/token-rotator
 
 BC_IMAGE           ?= $(DOCKER_REGISTRY)/binding-controller:$(IMAGE_TAG)
 WO_IMAGE           ?= $(DOCKER_REGISTRY)/widget-operator:$(IMAGE_TAG)
 OV_IMAGE           ?= $(DOCKER_REGISTRY)/oidc-verifier:$(IMAGE_TAG)
 DAP_IMAGE          ?= $(DOCKER_REGISTRY)/dex-auth-plugin:$(IMAGE_TAG)
-TR_IMAGE           ?= $(DOCKER_REGISTRY)/token-rotator:$(IMAGE_TAG)
 
 CRDS_DIR           ?= deploy/platform-mvp/crds
 OUT_DIR            ?= bin
@@ -59,32 +59,44 @@ CERT_MANAGER_VERSION ?= v1.17.1
 help:
 	@echo "Platform MVP — build, deploy, validate"
 	@echo ""
-	@echo "Test & Lint:"
-	@echo "  make test        Run all Go unit tests"
-	@echo "  make lint        go vet + gofmt check"
+	@echo "Deploy (4-wave Helm chart decomposition):"
+	@echo "  make deploy        Full deployment (clusters + 4 waves)"
+	@echo "  make deploy-wave1  Wave 1: Install all CRDs on hub + us"
+	@echo "  make deploy-wave2  Wave 2: Infrastructure on hub (LGTM + Dex + ingress)"
+	@echo "  make deploy-wave3  Wave 3: Hub services (Kro + binding-controller + fleet)"
+	@echo "  make deploy-wave4  Wave 4: US spoke (widget-operator + oidc-verifier)"
+	@echo "  make deploy-cd     Enable GitOps (Flux CD) on hub"
+	@echo "  make clusters      Create kind clusters"
 	@echo ""
-	@echo "Build & Push:"
-	@echo "  make build-images  Build all 5 images in parallel"
-	@echo "  make push-images   Push all 5 images to Docker Hub in parallel"
-	@echo "  make build-bc / build-wo / build-ov / build-dap / build-tr"
+	@echo "Test:"
+	@echo "  make test          Run all Go unit tests"
+	@echo "  make test-race     Unit tests with race detector"
+	@echo "  make test-cover    Unit tests with coverage profiles"
+	@echo "  make validate      Run full Chainsaw E2E suite (20 tests)"
+	@echo "  make lint          go vet + gofmt check"
+	@echo "  make lint-fix      Auto-fix formatting + go vet"
 	@echo ""
-	@echo "Deploy:"
-	@echo "  make deploy      Full deployment (clusters + images + us + hub)"
-	@echo "  make clusters    Create kind clusters (parallel)"
-	@echo "  make deploy-us   Deploy widget-operator + oidc-verifier on us"
-	@echo "  make deploy-hub  Deploy full hub stack (Kro + CRDs + Helm)"
-	@echo "  make deploy-cd   Enable GitOps (Flux CD) on already-deployed hub"
-	@echo "  make verify-all  Full clean-room: clean → deploy → validate → deploy-cd"
+	@echo "Build:"
+	@echo "  make build-images  Build all 4 Docker images in parallel"
+	@echo "  make push-images   Push all 4 images to Docker Hub"
 	@echo ""
-	@echo "Validate:"
-	@echo "  make validate    Run full Chainsaw E2E suite"
+	@echo "Observe:"
+	@echo "  make grafana       Port-forward Grafana → localhost:3000"
+	@echo "  make grafana-url   Print dashboard URLs"
 	@echo ""
 	@echo "Clean:"
-	@echo "  make clean       Destroy clusters + artifacts"
+	@echo "  make clean         Destroy clusters + artifacts"
+	@echo "  make clean-artifacts  Remove bin/ and coverage files"
+	@echo ""
+	@echo "Tools:"
+	@echo "  make install-chainsaw   Install Chainsaw CLI"
+	@echo "  make install-flux       Install Flux CLI"
+	@echo "  make chainsaw-runner    Build in-cluster Chainsaw runner"
+	@echo "  make verify-all         Full clean-room: clean → deploy → validate → deploy-cd"
 
 # ── Test ─────────────────────────────────────────────────────────────────────
-.PHONY: test test-root test-bc test-wo test-ov test-dap test-tr test-race test-cover
-test: test-root test-bc test-wo test-ov test-dap test-tr
+.PHONY: test test-root test-bc test-wo test-ov test-dap test-race test-cover
+test: test-root test-bc test-wo test-ov test-dap
 	@echo "==> All unit tests passed"
 
 test-root:
@@ -102,23 +114,18 @@ test-ov:
 test-dap:
 	cd $(DAP_DIR) && go test ./... -count=1
 
-test-tr:
-	cd $(TR_DIR) && go test ./... -count=1
-
 test-race:
 	go test -race ./... -count=1
 	cd $(BC_DIR) && go test -race ./... -count=1
 	cd $(WO_DIR) && go test -race ./... -count=1
 	cd $(OV_DIR) && go test -race ./... -count=1
 	cd $(DAP_DIR) && go test -race ./... -count=1
-	cd $(TR_DIR) && go test -race ./... -count=1
 
 test-cover:
 	go test -coverprofile=coverage-root.out ./...
 	cd $(BC_DIR) && go test -coverprofile=../../coverage-bc.out ./...
 	cd $(WO_DIR) && go test -coverprofile=../../coverage-wo.out ./...
 	cd $(DAP_DIR) && go test -coverprofile=../../coverage-dap.out ./... 2>/dev/null || true
-	cd $(TR_DIR) && go test -coverprofile=../../coverage-tr.out ./... 2>/dev/null || true
 	@echo "Coverage: coverage-*.out"
 
 # ── Lint ─────────────────────────────────────────────────────────────────────
@@ -146,7 +153,7 @@ lint-fix:
 	cd $(OV_DIR) && go vet ./...
 
 # ── Build ────────────────────────────────────────────────────────────────────
-.PHONY: build build-bc build-wo build-ov build-dap build-tr
+.PHONY: build build-bc build-wo build-ov build-dap
 build: build-bc
 
 build-bc:
@@ -154,9 +161,9 @@ build-bc:
 	cd $(BC_DIR) && go build -o ../../$(BC_BIN) .
 
 # ── Docker images (build only) ───────────────────────────────────────────────
-.PHONY: build-images build-bc-image build-wo-image build-ov-image build-dap-image build-tr-image
+.PHONY: build-images build-bc-image build-wo-image build-ov-image build-dap-image
 
-build-images: build-bc-image build-wo-image build-ov-image build-dap-image build-tr-image
+build-images: build-bc-image build-wo-image build-ov-image build-dap-image
 
 build-bc-image:
 	@echo "==> Building $(BC_IMAGE)"
@@ -174,10 +181,6 @@ build-dap-image:
 	@echo "==> Building $(DAP_IMAGE)"
 	docker build -f $(DAP_DIR)/Dockerfile -t $(DAP_IMAGE) .
 
-build-tr-image:
-	@echo "==> Building $(TR_IMAGE)"
-	docker build -f $(TR_DIR)/Dockerfile -t $(TR_IMAGE) .
-
 # Build all images in parallel
 build-images-parallel:
 	@echo "==> Building all images in parallel"
@@ -185,14 +188,13 @@ build-images-parallel:
 	$(MAKE) --no-print-directory build-wo-image & \
 	$(MAKE) --no-print-directory build-ov-image & \
 	$(MAKE) --no-print-directory build-dap-image & \
-	$(MAKE) --no-print-directory build-tr-image & \
 	wait
 	@echo "==> All images built"
 
 # ── Docker push (parallel by default) ────────────────────────────────────────
-.PHONY: push-images push-bc push-wo push-ov push-dap push-tr
+.PHONY: push-images push-bc push-wo push-ov push-dap
 
-push-images: push-bc push-wo push-ov push-dap push-tr
+push-images: push-bc push-wo push-ov push-dap
 
 push-bc:
 	docker push $(BC_IMAGE)
@@ -202,8 +204,6 @@ push-ov:
 	docker push $(OV_IMAGE)
 push-dap:
 	docker push $(DAP_IMAGE)
-push-tr:
-	docker push $(TR_IMAGE)
 
 push-images-parallel:
 	@echo "==> Pushing all images to $(DOCKER_REGISTRY)"
@@ -211,7 +211,6 @@ push-images-parallel:
 	docker push $(WO_IMAGE) & \
 	docker push $(OV_IMAGE) & \
 	docker push $(DAP_IMAGE) & \
-	docker push $(TR_IMAGE) & \
 	wait
 	@echo "==> All images pushed"
 
@@ -255,6 +254,13 @@ clusters:
 	kubectl --context kind-$(KIND_US) get nodes
 	@echo "  Extracting internal kubeconfig..."
 	kind get kubeconfig --name $(KIND_US) --internal > $(BC_INTERNAL_KC)
+	@echo "  Generating E2E kubeconfigs..."
+	kind get kubeconfig --name $(KIND_HUB) > $(CHAINSAW_DIR)/kubeconfig-hub
+	kind get kubeconfig --name $(KIND_US) --internal > $(CHAINSAW_DIR)/kubeconfig-us-internal
+	@US_IP=$$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(KIND_US)-control-plane 2>/dev/null); \
+	if [ -n "$$US_IP" ]; then \
+		sed -i "s|https://us-control-plane:6443|https://$$US_IP:6443|" $(CHAINSAW_DIR)/kubeconfig-us-internal; \
+	fi
 	@HUB_IP=$$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(KIND_HUB)-control-plane 2>/dev/null); \
 	if [ -n "$$HUB_IP" ]; then \
 		docker exec $(KIND_US)-control-plane sh -c "command -v curl >/dev/null 2>&1 && curl -s --connect-timeout 2 http://$$HUB_IP:6443 >/dev/null 2>&1" 2>/dev/null || true; \
@@ -264,7 +270,10 @@ clusters:
 	@echo "==> Clusters ready"
 
 # ── Deploy ───────────────────────────────────────────────────────────────────
-.PHONY: deploy deploy-us deploy-hub
+# Wave-based deployment: each wave is a Helm chart that groups related resources.
+# Flux/GitOps path mirrors this with HelmRelease dependsOn chains.
+.PHONY: deploy deploy-wave1 deploy-wave2 deploy-wave3 deploy-wave4
+.PHONY: deploy-us deploy-hub  # legacy aliases
 
 deploy: crds
 	@echo "==> Building images and creating clusters in parallel"
@@ -272,40 +281,35 @@ deploy: crds
 	$(MAKE) clusters & \
 	wait
 	$(MAKE) push-images-parallel
-	@echo "==> Deploying us + hub in parallel"
-	$(MAKE) deploy-us & \
-	$(MAKE) deploy-hub & \
+	@echo "==> Wave 1: CRDs on hub + us"
+	$(MAKE) deploy-wave1
+	@echo "==> Wave 2 (infra on hub) + Wave 4 (US spoke) in parallel"
+	@$(MAKE) --no-print-directory deploy-wave2 & \
+	$(MAKE) --no-print-directory deploy-wave4 & \
 	wait
+	@echo "==> Wave 2: Infrastructure on hub"
+	$(MAKE) deploy-wave2
+	@echo "==> Wave 3: Hub services on hub"
+	$(MAKE) deploy-wave3
 	@echo "==> Platform deploy complete (Flux not yet installed — run 'make deploy-cd' for GitOps)"
 
-deploy-us:
-	@echo "==> Deploying widget-operator + oidc-verifier on us"
-	kubectl --context kind-$(KIND_US) create namespace default --dry-run=client -o yaml | kubectl apply -f -
-	helm upgrade --install us $(US_CHART) \
-		-n default --create-namespace --wait --timeout $(HELM_TIMEOUT) \
+# ── Wave 1: CRDs (both hub and us, cluster-scoped) ──────────────────────────
+deploy-wave1: crds
+	@echo "==> Wave 1: Installing platform CRDs on hub + us"
+	helm upgrade --install crds $(CRDS_CHART) \
+		--create-namespace --wait --timeout $(HELM_TIMEOUT) \
+		--kube-context kind-$(KIND_HUB)
+	helm upgrade --install crds $(CRDS_CHART) \
+		--create-namespace --wait --timeout $(HELM_TIMEOUT) \
 		--kube-context kind-$(KIND_US)
-	@echo "  Rolling out widget-operator..."
-	kubectl --context kind-$(KIND_US) -n default rollout status deployment/widget-operator --timeout=60s
-	@echo "  Rolling out oidc-verifier..."
-	kubectl --context kind-$(KIND_US) -n default rollout status deployment/oidc-verifier --timeout=60s
-	@echo "==> US spoke deployed"
-
-deploy-hub: crds
-	@echo "==> Installing Kro on hub"
-	kubectl --context kind-$(KIND_HUB) create namespace kro-system 2>/dev/null || true
-	kubectl --context kind-$(KIND_HUB) apply -f $(CRDS_DIR)/kro-core-install-manifests.yaml
-	kubectl --context kind-$(KIND_HUB) -n kro-system rollout status deploy/kro --timeout=2m &
-	@echo "  Installing CRDs..."
-	kubectl --context kind-$(KIND_HUB) apply -f $(CRDS_DIR)/clusterprofiles-crd.yaml &
-	kubectl --context kind-$(KIND_HUB) apply -f $(CRDS_DIR)/cert-manager.crds.yaml &
-	kubectl --context kind-$(KIND_HUB) apply -f $(CRDS_DIR)/prometheus-operator-crds.yaml &
-	wait
-	@echo "  Waiting for Kro CRD..."
+	@echo "  Waiting for Kro CRDs..."
 	kubectl --context kind-$(KIND_HUB) wait --for=condition=Established crd/resourcegraphdefinitions.kro.run --timeout=30s
-	@echo "==> Deploying hub (umbrella chart)"
-	@if [ ! -f $(BC_INTERNAL_KC) ]; then \
-		kind get kubeconfig --name $(KIND_US) --internal > $(BC_INTERNAL_KC); \
-	fi
+	kubectl --context kind-$(KIND_US) wait --for=condition=Established crd/widgets.platform.example.com --timeout=30s
+	@echo "==> Wave 1 complete"
+
+# ── Wave 2: Infrastructure (hub context) ──────────────────────────────────────
+deploy-wave2:
+	@echo "==> Wave 2: Installing infrastructure on hub"
 	@if [ "$(HUB_CHART)/Chart.lock" -ot "$(HUB_CHART)/Chart.yaml" ]; then \
 		echo "  Chart.yaml changed, running helm dependency update..."; \
 		helm dependency update $(HUB_CHART) > /dev/null; \
@@ -324,6 +328,24 @@ deploy-hub: crds
 	wait
 	@echo "  Waiting for Dex..."
 	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) rollout status deploy/dex --timeout=2m
+	@echo "  Enabling Grafana Ingress..."
+	helm upgrade hub $(HUB_CHART) -n $(OBS_NS) --timeout 60s \
+		--set ingress.host=$(INGRESS_HOST) --set ingress.enabled=true \
+		-f $(HUB_CHART)/e2e-values.yaml \
+		--kube-context kind-$(KIND_HUB)
+	@echo "==> Wave 2 complete"
+
+# ── Wave 3: Hub services (hub context) ────────────────────────────────────────
+deploy-wave3:
+	@echo "==> Wave 3: Installing hub services on hub"
+	@if [ ! -f $(BC_INTERNAL_KC) ]; then \
+		kind get kubeconfig --name $(KIND_US) --internal > $(BC_INTERNAL_KC); \
+	fi
+	kubectl --context kind-$(KIND_HUB) create namespace kro-system 2>/dev/null || true
+	helm upgrade --install hub-services $(HUBSVC_CHART) \
+		-n default --create-namespace --timeout $(HELM_TIMEOUT) \
+		-f $(HUBSVC_CHART)/e2e-values.yaml \
+		--kube-context kind-$(KIND_HUB)
 	@echo "  Creating secrets..."
 	kubectl --context kind-$(KIND_HUB) create secret generic us-kubeconfig \
 		--from-file=value=$(BC_INTERNAL_KC) \
@@ -331,22 +353,30 @@ deploy-hub: crds
 	kubectl --context kind-$(KIND_HUB) create secret generic binding-controller-dex \
 		--from-literal=client-secret=us-spoke-controller-secret-demo \
 		--dry-run=client -o yaml | kubectl --context kind-$(KIND_HUB) apply -f - &
-	kubectl --context kind-$(KIND_HUB) create secret generic token-rotator-dex \
-		--from-literal=client-secret=us-spoke-controller-secret-demo \
-		--dry-run=client -o yaml | kubectl --context kind-$(KIND_HUB) apply -f - &
 	wait
 	@echo "  Restarting controllers..."
 	kubectl --context kind-$(KIND_HUB) -n default rollout restart deployment/binding-controller &
-	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) rollout restart deployment/token-rotator 2>/dev/null &
 	wait
 	kubectl --context kind-$(KIND_HUB) -n default rollout status deployment/binding-controller --timeout=60s
-	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) rollout status deployment/token-rotator --timeout=60s 2>/dev/null || true
-	@echo "  Enabling Grafana Ingress..."
-	helm upgrade hub $(HUB_CHART) -n $(OBS_NS) --timeout 60s \
-		--set ingress.host=$(INGRESS_HOST) --set ingress.enabled=true \
-		-f $(HUB_CHART)/e2e-values.yaml \
-		--kube-context kind-$(KIND_HUB)
-	@echo "==> Hub deployed ($(GRAFANA_URL))"
+	kubectl --context kind-$(KIND_HUB) -n kro-system rollout status deployment/kro --timeout=2m
+	@echo "==> Wave 3 complete"
+
+# ── Wave 4: US spoke (us context) ─────────────────────────────────────────────
+deploy-wave4:
+	@echo "==> Wave 4: Installing US spoke on us"
+	kubectl --context kind-$(KIND_US) create namespace default --dry-run=client -o yaml | kubectl apply -f -
+	helm upgrade --install us $(US_CHART) \
+		-n default --create-namespace --wait --timeout $(HELM_TIMEOUT) \
+		--kube-context kind-$(KIND_US)
+	@echo "  Rolling out widget-operator..."
+	kubectl --context kind-$(KIND_US) -n default rollout status deployment/widget-operator --timeout=60s
+	@echo "  Rolling out oidc-verifier..."
+	kubectl --context kind-$(KIND_US) -n default rollout status deployment/oidc-verifier --timeout=60s
+	@echo "==> Wave 4 complete"
+
+# Legacy aliases
+deploy-us: deploy-wave4
+deploy-hub: deploy-wave1 deploy-wave2 deploy-wave3
 
 # ── Flux / GitOps ────────────────────────────────────────────────────────────
 .PHONY: deploy-flux deploy-cd verify-all

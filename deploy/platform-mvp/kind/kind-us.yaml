@@ -8,11 +8,15 @@ nodes:
       kind: ClusterConfiguration
       apiServer:
         extraArgs:
-          oidc-issuer-url: "https://bm4080.taildf7067.ts.net/dex"
-          oidc-client-id: "kube-apiserver"
-          oidc-username-claim: "sub"
-          oidc-groups-claim: "groups"
-          oidc-username-prefix: "oidc:"
-          oidc-groups-prefix: "oidc:"
+          authentication-config: "/etc/kubernetes/auth/authentication-configuration.yaml"
+        extraVolumes:
+          - name: auth-config
+            hostPath: /etc/kubernetes/auth
+            mountPath: /etc/kubernetes/auth
+            readOnly: true
+    extraMounts:
+      - hostPath: /tmp/kro-us-auth
+        containerPath: /etc/kubernetes/auth
+        readOnly: true
   - role: worker
     image: kindest/node:v1.30.0
