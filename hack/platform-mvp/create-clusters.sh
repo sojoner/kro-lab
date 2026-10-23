@@ -5,32 +5,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 HUB_CONFIG="${ROOT_DIR}/deploy/platform-mvp/kind/kind-hub.yaml"
+US_CONFIG_TMPL="${ROOT_DIR}/deploy/platform-mvp/kind/kind-us.yaml.tmpl"
 US_CONFIG="${ROOT_DIR}/deploy/platform-mvp/kind/kind-us.yaml"
-US_AUTH_DIR="/tmp/kro-us-auth"
+US_CHART="${ROOT_DIR}/deploy/platform-mvp/chart/us"
+# Readable/writable by the invoking user (no root-owned /tmp race, survives
+# host reboots) — always resolved relative to US_CONFIG_TMPL's own location,
+# never a machine-specific absolute path.
+US_AUTH_DIR="$(dirname "${US_CONFIG_TMPL}")/us-auth"
 
 echo "Creating hub cluster..."
 kind create cluster --name hub --config "${HUB_CONFIG}"
 
 HUB_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' hub-control-plane)
 
-echo "Preparing us AuthenticationConfiguration..."
+echo "Rendering kind-us.yaml from template (extraMounts hostPath -> ${US_AUTH_DIR})..."
 mkdir -p "${US_AUTH_DIR}"
-cat > "${US_AUTH_DIR}/authentication-configuration.yaml" << AUTHCONFIG
-apiVersion: apiserver.config.k8s.io/v1beta1
-kind: AuthenticationConfiguration
-jwt:
-  - issuer:
-      url: https://bm4080.taildf7067.ts.net/dex
-      audiences:
-        - kubernetes
-    claimMappings:
-      username:
-        claim: sub
-        prefix: "dex:"
-      groups:
-        claim: groups
-        prefix: "dex:"
-AUTHCONFIG
+sed "s|__US_AUTH_DIR__|${US_AUTH_DIR}|" "${US_CONFIG_TMPL}" > "${US_CONFIG}"
+
+echo "Preparing us AuthenticationConfiguration from chart/us/templates/auth-config.yaml (single source of truth, see chart/us/values.yaml)..."
+"${SCRIPT_DIR}/render-us-auth-config.sh" "${US_CHART}" > "${US_AUTH_DIR}/authentication-configuration.yaml"
 
 echo "Creating us cluster..."
 kind create cluster --name us --config "${US_CONFIG}"

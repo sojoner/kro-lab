@@ -41,7 +41,9 @@ graph TB
 # Create hub (1 control-plane)
 kind create cluster --name hub --config deploy/platform-mvp/kind/kind-hub.yaml
 
-# Create us (1 control-plane + 3 workers)
+# Render kind-us.yaml from its template (resolves the auth-mount hostPath
+# relative to the template, then create us (1 control-plane + 3 workers)
+make render-kind-us-config
 kind create cluster --name us --config deploy/platform-mvp/kind/kind-us.yaml
 
 # Extract internal kubeconfig for cross-cluster access
@@ -62,7 +64,8 @@ Or use the script:
 | File | Purpose |
 |------|---------|
 | `deploy/platform-mvp/kind/kind-hub.yaml` | Hub cluster config (hostPort 80+443) |
-| `deploy/platform-mvp/kind/kind-us.yaml` | Us cluster config (1 CP + 3 workers) |
+| `deploy/platform-mvp/kind/kind-us.yaml.tmpl` | Us cluster config template (1 CP + 3 workers) |
+| `deploy/platform-mvp/kind/kind-us.yaml` | Generated from the template via `make render-kind-us-config` (gitignored) |
 | `hack/platform-mvp/create-clusters.sh` | Automated cluster creation |
 | `hack/platform-mvp/destroy-clusters.sh` | Automated cluster teardown |
 

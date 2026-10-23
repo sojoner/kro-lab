@@ -15,7 +15,12 @@ export PATH := $(shell go env GOPATH)/bin:$(PATH)
 KIND_HUB          ?= hub
 KIND_US           ?= us
 KIND_HUB_CONFIG   ?= deploy/platform-mvp/kind/kind-hub.yaml
+KIND_US_CONFIG_TMPL ?= deploy/platform-mvp/kind/kind-us.yaml.tmpl
 KIND_US_CONFIG    ?= deploy/platform-mvp/kind/kind-us.yaml
+# Readable/writable by the invoking user (no root-owned /tmp race, survives
+# host reboots) — always resolved relative to KIND_US_CONFIG_TMPL's own
+# location, never a machine-specific absolute path.
+US_AUTH_DIR       ?= $(abspath $(dir $(KIND_US_CONFIG_TMPL))us-auth)
 
 HUB_CHART          ?= deploy/platform-mvp/chart/infrastructure
 US_CHART           ?= deploy/platform-mvp/chart/us
@@ -238,9 +243,37 @@ $(CRDS_DIR)/prometheus-operator-crds.yaml: | $(CRDS_DIR)
 	curl -fsSL -o $@ https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.92.1/stripped-down-crds.yaml
 
 # ── Clusters ─────────────────────────────────────────────────────────────────
-.PHONY: clusters
+.PHONY: clusters ensure-us-auth-config render-kind-us-config
 
-clusters:
+# KIND_US_CONFIG is generated from KIND_US_CONFIG_TMPL on every run so its
+# extraMounts hostPath always points at US_AUTH_DIR, resolved relative to the
+# template's own location rather than hardcoded to one machine's checkout path.
+render-kind-us-config:
+	@mkdir -p "$(US_AUTH_DIR)"
+	@sed 's|__US_AUTH_DIR__|$(US_AUTH_DIR)|' $(KIND_US_CONFIG_TMPL) > $(KIND_US_CONFIG)
+
+# Re-derive the us apiserver's AuthenticationConfiguration from the chart on
+# every `make clusters` / `make deploy` / `make validate` run so a stale or
+# missing file self-heals without a separate manual step. Content comes from
+# chart/us/templates/auth-config.yaml (values.yaml is the single source of
+# truth) via hack/platform-mvp/render-us-auth-config.sh — never
+# hand-duplicate it here.
+ensure-us-auth-config: render-kind-us-config
+	@mkdir -p "$(US_AUTH_DIR)" 2>/dev/null || { \
+		echo "ERROR: cannot create $(US_AUTH_DIR) (likely root-owned after a host reboot)."; \
+		echo "  Run this once, then retry:"; \
+		echo "  ./hack/platform-mvp/render-us-auth-config.sh $(US_CHART) | sudo tee $(US_AUTH_DIR)/authentication-configuration.yaml > /dev/null"; \
+		exit 1; \
+	}
+	@./hack/platform-mvp/render-us-auth-config.sh $(US_CHART) > "$(US_AUTH_DIR)/authentication-configuration.yaml" 2>/dev/null || { \
+		echo "ERROR: cannot write $(US_AUTH_DIR)/authentication-configuration.yaml (likely root-owned after a host reboot)."; \
+		echo "  Run this once, then retry:"; \
+		echo "  ./hack/platform-mvp/render-us-auth-config.sh $(US_CHART) | sudo tee $(US_AUTH_DIR)/authentication-configuration.yaml > /dev/null"; \
+		exit 1; \
+	}
+	@echo "  us AuthenticationConfiguration ready at $(US_AUTH_DIR)/authentication-configuration.yaml"
+
+clusters: ensure-us-auth-config
 	@echo "==> Creating kind clusters (parallel)"
 	@if ! kind get clusters 2>/dev/null | grep -qx "$(KIND_HUB)"; then \
 		kind create cluster --name $(KIND_HUB) --config $(KIND_HUB_CONFIG) & \
@@ -422,7 +455,7 @@ chainsaw-runner:
 
 # ── Validate ─────────────────────────────────────────────────────────────────
 .PHONY: validate
-validate:
+validate: ensure-us-auth-config
 	@echo "==> Running full Chainsaw E2E test suite"
 	@mkdir -p $(CHAINSAW_DIR)
 	kind get kubeconfig --name $(KIND_HUB) > $(CHAINSAW_DIR)/kubeconfig-hub

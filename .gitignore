@@ -33,6 +33,11 @@ chainsaw-report.json
 platform-mvp/dex-auth-plugin/dex-auth-plugin
 bin/
 
+# Generated from kind-us.yaml.tmpl (make render-kind-us-config) + the us
+# spoke's bootstrap AuthenticationConfiguration (make ensure-us-auth-config)
+deploy/platform-mvp/kind/kind-us.yaml
+deploy/platform-mvp/kind/us-auth/
+
 # Cryptographic key material (do not commit)
 *.pem
 *.key

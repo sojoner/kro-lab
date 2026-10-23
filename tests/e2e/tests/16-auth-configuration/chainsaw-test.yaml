@@ -56,6 +56,20 @@ spec:
               exit 0
             }
 
+            HUB_ISSUER=$(yq eval '.jwt[] | select(.issuer.url | test("hub-control-plane")) | .issuer.url' /tmp/auth-config.yaml 2>/dev/null || echo "")
+            if [ -z "$HUB_ISSUER" ]; then
+              echo "ERROR: AuthenticationConfiguration missing hub issuer (controller SA-token trust)"
+              exit 1
+            fi
+            echo "OK: hub issuer configured: $HUB_ISSUER"
+
+            HUB_PREFIX=$(yq eval '.jwt[] | select(.issuer.url | test("hub-control-plane")) | .claimMappings.username.prefix' /tmp/auth-config.yaml 2>/dev/null || echo "")
+            if [ "$HUB_PREFIX" != "hub:" ]; then
+              echo "ERROR: hub issuer username prefix is '$HUB_PREFIX', expected 'hub:'"
+              exit 1
+            fi
+            echo "OK: hub username prefix: $HUB_PREFIX"
+
             DEX_ISSUER=$(yq eval '.jwt[] | select(.issuer.url | test("dex")) | .issuer.url' /tmp/auth-config.yaml 2>/dev/null || echo "")
             if [ -z "$DEX_ISSUER" ]; then
               echo "ERROR: AuthenticationConfiguration missing Dex issuer"

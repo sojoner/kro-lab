@@ -15,7 +15,7 @@ nodes:
             mountPath: /etc/kubernetes/auth
             readOnly: true
     extraMounts:
-      - hostPath: /tmp/kro-us-auth
+      - hostPath: __US_AUTH_DIR__
         containerPath: /etc/kubernetes/auth
         readOnly: true
   - role: worker
