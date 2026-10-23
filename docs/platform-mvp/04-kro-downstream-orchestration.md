@@ -27,7 +27,7 @@ graph LR
 
 ## GlobalWidget Schema
 
-Defined in `kro/globalwidget-rgd.yaml`:
+Defined in `deploy/platform-mvp/chart/hub-services/templates/kro-rgd.yaml`:
 
 ```yaml
 metadata:
@@ -49,22 +49,23 @@ This uses Kro's **CEL expression** to aggregate all child `RegionalWidgetRequest
 
 ## RGD Template
 
-The core template (`globalwidget-rgd.yaml:16-27`) uses `forEach`:
+The core template (`kro-rgd.yaml:15-28`) uses `forEach`:
 
 ```yaml
-resource:
-  forEach:
-    items: "${schema.spec.regions}"
-    name: "${schema.metadata.name}-${region}"
-    resource:
+resources:
+  - id: regionalWidgetRequest
+    template:
       apiVersion: platform.example.com/v1alpha1
       kind: RegionalWidgetRequest
+      metadata:
+        name: "${schema.metadata.name}-${region}"
+        labels:
+          platform.example.com/tenant: '${schema.metadata.labels["platform.example.com/tenant"]}'
       spec:
         region: "${region}"
         message: "${schema.spec.message}"
-      metadata:
-        labels:
-          platform.example.com/tenant: '${schema.metadata.labels["platform.example.com/tenant"]}'
+    forEach:
+      - region: "${schema.spec.regions}"
 ```
 
 Key behaviors:
@@ -95,9 +96,9 @@ Additionally, Kro's controller needs RBAC for the `platform.example.com` API gro
 
 ## Deployment
 
-1. **CRD first**: `kubectl apply -f regionalwidgetrequest-crd.yaml`
-2. **Kro RBAC**: `kubectl apply -f kro-rbac.yaml`
-3. **RGD**: `kubectl apply -f globalwidget-rgd.yaml`
+1. **CRD first**: `kubectl apply -f deploy/platform-mvp/chart/crds/templates/regionalwidgetrequest-crd.yaml`
+2. **Kro RBAC**: `kubectl apply -f deploy/platform-mvp/chart/hub-services/templates/kro-rbac.yaml`
+3. **RGD**: `kubectl apply -f deploy/platform-mvp/chart/hub-services/templates/kro-rgd.yaml`
 
 Or via Helm: `helm install hub ./chart/infrastructure` (templates handle ordering).
 
@@ -111,8 +112,6 @@ Or via Helm: `helm install hub ./chart/infrastructure` (templates handle orderin
 
 | File | Purpose |
 |------|---------|
-| `kro/globalwidget-rgd.yaml` | GlobalWidget RGD definition |
-| `kro/regionalwidgetrequest-crd.yaml` | RegionalWidgetRequest CRD |
-| `deploy/platform-mvp/chart/crds/templates/regionalwidgetrequest-crd.yaml` | CRD (chart-embedded copy) |
-| `deploy/platform-mvp/chart/hub-services/templates/kro-rgd.yaml` | RGD (chart-embedded copy) |
+| `deploy/platform-mvp/chart/hub-services/templates/kro-rgd.yaml` | GlobalWidget RGD definition |
+| `deploy/platform-mvp/chart/crds/templates/regionalwidgetrequest-crd.yaml` | RegionalWidgetRequest CRD |
 | `deploy/platform-mvp/chart/hub-services/templates/kro-rbac.yaml` | RBAC for platform.example.com API group |

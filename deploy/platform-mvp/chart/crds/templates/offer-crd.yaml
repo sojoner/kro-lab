@@ -1,0 +1,132 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: offers.agora.platform.example.com
+spec:
+  group: agora.platform.example.com
+  names:
+    kind: Offer
+    listKind: OfferList
+    plural: offers
+    singular: offer
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Product
+          type: string
+          jsonPath: .spec.productRef.name
+        - name: Vendor
+          type: string
+          jsonPath: .spec.vendor
+        - name: Version
+          type: string
+          jsonPath: .spec.productRef.version
+        - name: Status
+          type: string
+          jsonPath: .status.conditions[?(@.type=='Ready')].status
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - productRef
+                - vendor
+                - allowTenants
+              properties:
+                productRef:
+                  type: object
+                  required:
+                    - name
+                    - version
+                  properties:
+                    name:
+                      type: string
+                    version:
+                      type: string
+                vendor:
+                  type: string
+                allowTenants:
+                  type: array
+                  items:
+                    type: string
+                requestedClaims:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - group
+                      - resource
+                      - verbs
+                    properties:
+                      group:
+                        type: string
+                      resource:
+                        type: string
+                      verbs:
+                        type: array
+                        items:
+                          type: string
+                      selector:
+                        type: object
+                        additionalProperties:
+                          type: string
+                credentialDelivery:
+                  type: object
+                  properties:
+                    secretNameTemplate:
+                      type: string
+                consumptionBundles:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      description:
+                        type: string
+                      credentialExchangeStrategies:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            type:
+                              type: string
+                            customType:
+                              type: string
+                            callbackUrl:
+                              type: string
+            status:
+              type: object
+              properties:
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                observedGeneration:
+                  type: integer

@@ -1,0 +1,13 @@
+apiVersion: agora.platform.example.com/v1alpha1
+kind: Citizen
+metadata:
+  name: demo-citizen
+  namespace: default
+  labels:
+    agora.platform.example.com/type: Human
+spec:
+  displayName: "Demo Citizen"
+  type: Human
+  oidcSub: "demo-citizen@example.com"
+  allowedProducts:
+    - widget

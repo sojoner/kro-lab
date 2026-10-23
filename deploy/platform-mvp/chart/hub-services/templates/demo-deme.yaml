@@ -1,0 +1,18 @@
+apiVersion: agora.platform.example.com/v1alpha1
+kind: Deme
+metadata:
+  name: demo-corp
+  labels:
+    agora.platform.example.com/deme: demo-corp
+spec:
+  displayName: "Demo Corporation"
+  namespaceName: default
+  quota:
+    cpu: "10"
+    memory: "32Gi"
+    storage: "100Gi"
+  allowedProducts:
+    - widget
+  labels:
+    platform.example.com/tenant: demo-corp
+  contactEmail: "admin@demo-corp.example.com"

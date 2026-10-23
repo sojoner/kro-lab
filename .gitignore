@@ -29,6 +29,10 @@ deploy/platform-mvp/chart/*/Chart.lock
 tests/e2e/chainsaw-report.json
 chainsaw-report.json
 
+# Go compiled binaries (checked in by mistake — removed from tracking)
+platform-mvp/dex-auth-plugin/dex-auth-plugin
+bin/
+
 # Cryptographic key material (do not commit)
 *.pem
 *.key

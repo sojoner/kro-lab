@@ -1,0 +1,28 @@
+apiVersion: agora.platform.example.com/v1alpha1
+kind: Product
+metadata:
+  name: widget
+  labels:
+    agora.platform.example.com/vendor: acme-corp
+spec:
+  displayName: "Widget"
+  vendor: acme-corp
+  description: >
+    Minimal end-to-end demonstration product. Proves the hub-to-spoke
+    fulfilment pattern works end-to-end with identity, multi-tenancy,
+    and fail-closed auth. The Widget itself is a stand-in for any
+    spoke-side capability — what's being validated is the pattern underneath.
+  labels:
+    cost-tier: demo
+    sla: none
+    domain: infrastructure
+  supportInfo: "https://github.com/sojoner/kro-lab"
+  licenseType: Apache-2.0
+  rgdRef:
+    name: globalwidget.platform.example.com
+  versions:
+    - version: v1alpha1
+      releaseStatus: active
+  visibility: public
+  policyLevels:
+    - agora:base:v1

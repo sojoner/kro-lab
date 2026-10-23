@@ -1,0 +1,77 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: product-catalog-ord
+spec:
+  description: >
+    Phase 14 — Verify catalog-controller produces a valid ORD document
+    from the Product CRD instances on the hub.
+  steps:
+  - try:
+    - assert:
+        resource:
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          metadata:
+            name: products.agora.platform.example.com
+        timeout: 30s
+    cluster: hub
+  - try:
+    - assert:
+        resource:
+          apiVersion: agora.platform.example.com/v1alpha1
+          kind: Product
+          metadata:
+            name: widget
+        timeout: 30s
+    cluster: hub
+  - try:
+    - script:
+        content: |
+          set -e
+          POD=$(kubectl get pods -n default -l app=catalog-controller -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          if [ -z "${POD}" ]; then
+            echo "FAIL: no catalog-controller pod found"
+            exit 1
+          fi
+          for i in $(seq 1 15); do
+            RESP=$(kubectl exec -n default "${POD}" -- wget -q -O - http://localhost:8080/.well-known/open-resource-discovery 2>/dev/null || echo "")
+            if [ -n "${RESP}" ]; then
+              echo "${RESP}" > /tmp/ord-doc.json
+              VENDORS=$(echo "${RESP}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(' '.join(v['title'] for v in d.get('vendors',[])))" 2>/dev/null || echo "")
+              if echo "${VENDORS}" | grep -q "acme-corp"; then
+                echo "PASS: vendors contains acme-corp"
+              else
+                echo "FAIL: vendors array missing 'acme-corp', got: [${VENDORS}]"
+                exit 1
+              fi
+              PRODUCTS=$(echo "${RESP}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(' '.join(p['title'] for p in d.get('products',[])))" 2>/dev/null || echo "")
+              if echo "${PRODUCTS}" | grep -iq "widget"; then
+                echo "PASS: products contains widget"
+              else
+                echo "FAIL: products array missing 'widget', got: [${PRODUCTS}]"
+                exit 1
+              fi
+              PACKAGES=$(echo "${RESP}" | python3 -c "import sys,json; d=json.load(sys.stdin); p=d.get('packages',[]); print(len(p))" 2>/dev/null || echo "")
+              if [ "${PACKAGES}" -gt 0 ] 2>/dev/null; then
+                echo "PASS: packages not empty"
+              else
+                echo "FAIL: packages array is empty"
+                exit 1
+              fi
+              APIRES=$(echo "${RESP}" | python3 -c "import sys,json; d=json.load(sys.stdin); a=d.get('apiResources',[]); print(len(a))" 2>/dev/null || echo "")
+              if [ "${APIRES}" -gt 0 ] 2>/dev/null; then
+                echo "PASS: apiResources not empty"
+              else
+                echo "FAIL: apiResources array is empty"
+                exit 1
+              fi
+              echo "ORD document valid"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: catalog-controller ORD endpoint not reachable after 30s"
+          exit 1
+        timeout: 90s
+    cluster: hub

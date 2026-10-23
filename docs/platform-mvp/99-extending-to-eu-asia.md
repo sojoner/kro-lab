@@ -20,6 +20,7 @@ The platform is designed for zero-code region extension. Adding a new spoke clus
 ### 1. Create the kind cluster
 
 ```bash
+# Need to create kind-eu.yaml and kind-asia.yaml first using kind-us.yaml as a template
 kind create cluster --name eu --config deploy/platform-mvp/kind/kind-eu.yaml
 kind create cluster --name asia --config deploy/platform-mvp/kind/kind-asia.yaml
 ```
@@ -27,8 +28,9 @@ kind create cluster --name asia --config deploy/platform-mvp/kind/kind-asia.yaml
 ### 2. Deploy spoke components
 
 ```bash
-make deploy-spoke REGION=eu
-make deploy-spoke REGION=asia
+# Spoke deployment uses the us Helm chart; extend with REGION helm value
+helm install us-eu deploy/platform-mvp/chart/us --set region=eu --set clusterName=kind-eu
+helm install us-asia deploy/platform-mvp/chart/us --set region=asia --set clusterName=kind-asia
 ```
 
 This installs the Widget Operator + Widget CRD + OIDC Verifier per spoke.

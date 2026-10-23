@@ -1,0 +1,10 @@
+apiVersion: agora.platform.example.com/v1alpha1
+kind: Colony
+metadata:
+  name: us
+  labels:
+    agora.platform.example.com/region: us
+spec:
+  region: us
+  clusterProfileRef:
+    name: us

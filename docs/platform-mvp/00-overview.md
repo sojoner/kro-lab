@@ -189,7 +189,15 @@ make clean
 | 10 | `10-oidc-trust.md` | **v2**: Split identity model — projected SA tokens (controllers) + Dex OIDC (humans), AuthenticationConfiguration |
 | 11 | `../design/oidc-trust-v2.md` | Full v2 trust model design document |
 | 12 | `12-security-guardrails.md` | Platform Wins: ValidatingAdmissionPolicy guardrails |
-| 99 | `99-extending-to-eu-asia.md` | Adding EU/ASIA regions — zero code changes required |
+| 13 | `13-polis-glossary.md` | Polis vocabulary — stalls, offers, contracts, seals, citizens, demes, colonies |
+| 14 | `14-stalls-products.md` | Product CRD — one RGD + metadata = one Product; catalog-controller |
+| 15 | — | Chainsaw test for ORD catalog (14-product-catalog) + Offer/Binding contracts (15-offer-binding-contracts) |
+| 16 | — | Offer + Binding CRDs, contract-controller (reconciles Binding → Accepted, serves ORD on :8081), hub service instances |
+| 17 | `18-citizens-seals.md` | Seal CRD — wraps credential delivery, secret creation on binding acceptance, revoke/reissue lifecycle |
+| 18 | `18-citizens-seals.md` | Citizen CRD — tenant identity (Human/Workload/Agent), OIDC sub validation, citizen-controller |
+| 19 | `19-demes.md` | Deme CRD (tenant account → namespace), namespace lifecycle, product allow-list |
+| 20 | `20-orchestration-aggregation.md` | Colony CRD (spoke region viewpoint), multi-region ORD aggregation, openmcp integration path |
+| 99 | `99-extending-to-eu-asia.md` | Adding EU/ASIA regions —e code changes required |
 
 ---
 

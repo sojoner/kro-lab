@@ -1,0 +1,121 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: colonies.agora.platform.example.com
+spec:
+  group: agora.platform.example.com
+  names:
+    kind: Colony
+    listKind: ColonyList
+    plural: colonies
+    singular: colony
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Region
+          type: string
+          jsonPath: .spec.region
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Products
+          type: integer
+          jsonPath: .status.productCount
+        - name: Heartbeat
+          type: string
+          jsonPath: .status.lastHeartbeat
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - region
+                - clusterProfileRef
+              properties:
+                region:
+                  type: string
+                  enum:
+                    - us
+                    - eu
+                    - asia
+                  description: Region identifier for this spoke colony
+                clusterProfileRef:
+                  type: object
+                  required:
+                    - name
+                  properties:
+                    name:
+                      type: string
+                      description: Name of the ClusterProfile for this spoke
+                ordWellKnownURL:
+                  type: string
+                  format: uri
+                  description: The spoke's ORD catalog endpoint for aggregation
+                providerConfig:
+                  type: object
+                  properties:
+                    auth:
+                      type: string
+                      enum:
+                        - Token
+                        - X509
+                      description: Authentication method for the spoke provider
+                    secretRef:
+                      type: object
+                      required:
+                        - name
+                      properties:
+                        name:
+                          type: string
+                          description: Secret containing credentials for spoke access
+            status:
+              type: object
+              properties:
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Joined
+                    - Healthy
+                    - Degraded
+                    - Left
+                spokeVersion:
+                  type: string
+                  description: Kubernetes version of the spoke cluster
+                productCount:
+                  type: integer
+                  description: Number of active products on this spoke
+                lastHeartbeat:
+                  type: string
+                  format: date-time
+                  description: Timestamp of the last heartbeat from this spoke

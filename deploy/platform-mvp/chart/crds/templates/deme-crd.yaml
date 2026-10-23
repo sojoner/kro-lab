@@ -1,0 +1,111 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: demes.agora.platform.example.com
+spec:
+  group: agora.platform.example.com
+  names:
+    kind: Deme
+    listKind: DemeList
+    plural: demes
+    singular: deme
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Namespace
+          type: string
+          jsonPath: .spec.namespaceName
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Products
+          type: integer
+          jsonPath: .status.productCount
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - displayName
+                - namespaceName
+              properties:
+                displayName:
+                  type: string
+                  description: Human-readable name for the deme
+                namespaceName:
+                  type: string
+                  description: The Kubernetes namespace this deme owns
+                  pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                quota:
+                  type: object
+                  properties:
+                    cpu:
+                      type: string
+                      description: CPU quota (e.g. 10)
+                    memory:
+                      type: string
+                      description: Memory quota (e.g. 32Gi)
+                    storage:
+                      type: string
+                      description: Storage quota (e.g. 100Gi)
+                allowedProducts:
+                  type: array
+                  items:
+                    type: string
+                  description: Product names this deme may access
+                labels:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: Labels applied to the namespace
+                contactEmail:
+                  type: string
+                  format: email
+                  description: Contact email for the deme administrator
+            status:
+              type: object
+              properties:
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Creating
+                    - Active
+                    - Suspended
+                    - Terminating
+                namespaceName:
+                  type: string
+                  description: Verified namespace name
+                productCount:
+                  type: integer
+                  description: Number of active product bindings for this deme

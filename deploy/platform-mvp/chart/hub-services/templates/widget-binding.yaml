@@ -1,0 +1,17 @@
+apiVersion: agora.platform.example.com/v1alpha1
+kind: Binding
+metadata:
+  name: widget-demo
+  namespace: default
+  labels:
+    agora.platform.example.com/offer: widget-offer
+spec:
+  offerRef:
+    name: widget-offer
+  version: v1alpha1
+  acceptedClaims:
+    - group: ""
+      resource: "widgets"
+      verbs:
+        - get
+        - list

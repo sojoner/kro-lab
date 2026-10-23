@@ -192,7 +192,7 @@ Full E2E validation and documentation updates.
 |-----------|-------------|
 | **token-rotator** (controller + deployment) | REMOVED — replaced by Kubelet-managed projected token rotation |
 | **token-rotator metrics** | REMOVED (`token_rotator_*`) |
-| **{region}-spoke-controller Dex clients** | REMOVED from Dex config |
+| **{region}-spoke-controller Dex clients** | RETAINED — still needed by binding-controller's dex-auth-plugin sidecar for Dex client-credentials flow (hub-services/values.yaml:20). Cleanup tracked in `docs/platform-mvp/13-polis-glossary.md` Phase 17. |
 | **{region}-access-kubeconfig Secrets** | REMOVED — token-rotator no longer writes live tokens into a Secret |
 | **kind-us oidc-* CLI flags** | REMOVED — replaced by AuthenticationConfiguration |
 | **Provider full-kubeconfig SHA256 change detection** | NARROWED — clusterKey is now SHA256(Host+CAData) only; token rotation in the Secret no longer triggers re-engagement |

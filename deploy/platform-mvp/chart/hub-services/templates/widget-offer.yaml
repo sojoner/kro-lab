@@ -1,0 +1,22 @@
+apiVersion: agora.platform.example.com/v1alpha1
+kind: Offer
+metadata:
+  name: widget-offer
+  labels:
+    agora.platform.example.com/vendor: acme-corp
+spec:
+  productRef:
+    name: widget
+    version: v1alpha1
+  vendor: acme-corp
+  allowTenants:
+    - "*"
+  credentialDelivery:
+    secretNameTemplate: "widget-${binding.metadata.name}-creds"
+  requestedClaims:
+    - group: ""
+      resource: "widgets"
+      verbs:
+        - get
+        - list
+        - watch

@@ -1,0 +1,169 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: products.agora.platform.example.com
+spec:
+  group: agora.platform.example.com
+  names:
+    kind: Product
+    listKind: ProductList
+    plural: products
+    singular: product
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Vendor
+          type: string
+          jsonPath: .spec.vendor
+        - name: RGD
+          type: string
+          jsonPath: .spec.rgdRef.name
+        - name: Visibility
+          type: string
+          jsonPath: .spec.visibility
+        - name: Status
+          type: string
+          jsonPath: .spec.versions[0].releaseStatus
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - vendor
+                - rgdRef
+                - versions
+                - visibility
+              properties:
+                displayName:
+                  type: string
+                  description: Human-readable name for the product catalog
+                vendor:
+                  type: string
+                  description: ORD Vendor identifier (e.g. acme-corp, globex-inc)
+                  pattern: '^[a-z][a-z0-9-]*[a-z0-9]$'
+                description:
+                  type: string
+                  description: Product description for the catalog
+                labels:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: ORD-compatible labels (cost-tier, sla, domain, etc.)
+                icon:
+                  type: string
+                  description: URL to the product icon
+                supportInfo:
+                  type: string
+                  description: Support contact or URL
+                licenseType:
+                  type: string
+                  description: SPDX or custom license identifier
+                rgdRef:
+                  type: object
+                  required:
+                    - name
+                  properties:
+                    name:
+                      type: string
+                      description: Name of the kro ResourceGraphDefinition
+                versions:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required:
+                      - version
+                      - releaseStatus
+                    properties:
+                      version:
+                        type: string
+                        description: API version string (e.g. v1alpha1)
+                      releaseStatus:
+                        type: string
+                        enum:
+                          - development
+                          - beta
+                          - active
+                          - deprecated
+                          - sunset
+                      deprecationDate:
+                        type: string
+                        format: date
+                      sunsetDate:
+                        type: string
+                        format: date
+                      successors:
+                        type: array
+                        items:
+                          type: string
+                  description: Versions of this product, matching ORD releaseStatus
+                visibility:
+                  type: string
+                  enum:
+                    - public
+                    - internal
+                    - private
+                  description: ORD visibility — metadata discoverability only
+                policyLevels:
+                  type: array
+                  items:
+                    type: string
+                  description: ORD policy level specification IDs
+                consumptionBundles:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      description:
+                        type: string
+                      credentialExchangeStrategies:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            type:
+                              type: string
+                            customType:
+                              type: string
+                            callbackUrl:
+                              type: string
+            status:
+              type: object
+              properties:
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                schemaVersion:
+                  type: string
+                  description: API version of the resolved RGD schema
+                observedGeneration:
+                  type: integer

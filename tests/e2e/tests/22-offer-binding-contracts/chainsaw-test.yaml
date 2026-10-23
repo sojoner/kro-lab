@@ -1,0 +1,104 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: offer-binding-contracts
+spec:
+  description: >
+    Phase 15 — Verify Offer and Binding CRDs exist and a Binding
+    transitions to Accepted status.
+  steps:
+  - try:
+    - assert:
+        resource:
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          metadata:
+            name: offers.agora.platform.example.com
+        timeout: 30s
+    cluster: hub
+  - try:
+    - assert:
+        resource:
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          metadata:
+            name: bindings.agora.platform.example.com
+        timeout: 30s
+    cluster: hub
+  - try:
+    - apply:
+        resource:
+          apiVersion: agora.platform.example.com/v1alpha1
+          kind: Offer
+          metadata:
+            name: e2e-test-widget-offer
+            labels:
+              agora.platform.example.com/vendor: acme-corp
+          spec:
+            productRef:
+              name: widget
+              version: v1alpha1
+            vendor: acme-corp
+            allowTenants:
+              - "*"
+            credentialDelivery:
+              secretNameTemplate: "widget-${binding.metadata.name}-creds"
+            requestedClaims:
+              - group: ""
+                resource: "widgets"
+                verbs:
+                  - get
+                  - list
+                  - watch
+    cluster: hub
+    finally:
+    - delete:
+        ref:
+          apiVersion: agora.platform.example.com/v1alpha1
+          kind: Offer
+          name: e2e-test-widget-offer
+        cluster: hub
+  - try:
+    - apply:
+        resource:
+          apiVersion: agora.platform.example.com/v1alpha1
+          kind: Binding
+          metadata:
+            name: e2e-test-widget-binding
+            namespace: default
+            labels:
+              agora.platform.example.com/offer: e2e-test-widget-offer
+          spec:
+            offerRef:
+              name: e2e-test-widget-offer
+            version: v1alpha1
+            acceptedClaims:
+              - group: ""
+                resource: "widgets"
+                verbs:
+                  - get
+                  - list
+    cluster: hub
+    finally:
+    - delete:
+        ref:
+          apiVersion: agora.platform.example.com/v1alpha1
+          kind: Binding
+          name: e2e-test-widget-binding
+          namespace: default
+        cluster: hub
+  - try:
+    - script:
+        content: |
+          for i in $(seq 1 30); do
+            PHASE=$(kubectl get binding e2e-test-widget-binding -n default -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            if [ "${PHASE}" = "Accepted" ] || [ "${PHASE}" = "Active" ]; then
+              echo "PASS: Binding status phase=${PHASE}"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: Binding not Accepted after 60s"
+          exit 1
+        timeout: 90s
+    cluster: hub

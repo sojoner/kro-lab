@@ -14,8 +14,6 @@ graph TB
         subgraph US["kind-us (v1.30.0)"]
             US_CP["Control Plane"]
             US_W1["Worker 1"]
-            US_W2["Worker 2"]
-            US_W3["Worker 3"]
         end
     end
 
@@ -28,7 +26,7 @@ graph TB
 ```
 
 - **Hub**: 1 control-plane node with hostPort 80+443 (nginx-ingress)
-- **Us**: 1 control-plane + 3 workers (no hostPort)
+- **Us**: 1 control-plane + 1 worker (no hostPort)
 - **Cross-cluster**: Clusters communicate via Docker bridge network (internal IPs)
 
 ## Prerequisites
@@ -41,7 +39,7 @@ graph TB
 # Create hub (1 control-plane)
 kind create cluster --name hub --config deploy/platform-mvp/kind/kind-hub.yaml
 
-# Create us (1 control-plane + 3 workers)
+# Create us (1 control-plane + 1 worker)
 kind create cluster --name us --config deploy/platform-mvp/kind/kind-us.yaml
 
 # Extract internal kubeconfig for cross-cluster access
@@ -62,13 +60,13 @@ Or use the script:
 | File | Purpose |
 |------|---------|
 | `deploy/platform-mvp/kind/kind-hub.yaml` | Hub cluster config (hostPort 80+443) |
-| `deploy/platform-mvp/kind/kind-us.yaml` | Us cluster config (1 CP + 3 workers) |
+| `deploy/platform-mvp/kind/kind-us.yaml` | Us cluster config (1 CP + 1 worker) |
 | `hack/platform-mvp/create-clusters.sh` | Automated cluster creation |
 | `hack/platform-mvp/destroy-clusters.sh` | Automated cluster teardown |
 
 ## Acceptance
 
 - `kubectl --context kind-hub get nodes` — 1 node Ready
-- `kubectl --context kind-us get nodes` — 4 nodes Ready
+- `kubectl --context kind-us get nodes` — 2 nodes Ready
 - Cross-cluster network connectivity verified
 - `chainsaw test tests/e2e --test-dir tests/01-hub-cluster-ready --test-dir tests/02-us-cluster-ready` passes
