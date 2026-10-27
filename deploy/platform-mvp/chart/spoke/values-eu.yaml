@@ -5,3 +5,6 @@ authConfiguration:
     # Must match the audience of the eu-token projected into the
     # binding controllers (chart/hub-services values: spokeTokens).
     audience: "homelab:eu-spoke"
+
+kubevirt:
+  enabled: true

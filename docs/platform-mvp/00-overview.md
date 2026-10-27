@@ -167,7 +167,7 @@ make deploy-cd
 # Build + deploy in-cluster Chainsaw test runner
 make chainsaw-runner
 
-# Run full E2E validation (21 tests)
+# Run full E2E validation (22 tests)
 make validate
 
 # Tear everything down

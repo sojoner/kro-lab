@@ -122,7 +122,7 @@ flowchart LR
 
 ## S9–S10 · Order VMs 🚧
 
-Planned, not built yet: the `eu` spoke is ready for it, KubeVirt is not installed.
+Planned, not built yet. KubeVirt v1.9.1 already runs on the `eu` spoke (test 24); the `VmSet` API and its controller do not exist yet.
 
 ```mermaid
 sequenceDiagram

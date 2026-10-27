@@ -67,6 +67,11 @@ BC_BIN             ?= $(OUT_DIR)/binding-controller
 FLUX_DIR           ?= deploy/platform-mvp/flux
 CERT_MANAGER_VERSION ?= v1.17.1
 
+# KubeVirt runs only on these spokes (needs /dev/kvm on the host). Its operator
+# manifest is cached under CRDS_DIR like the other upstream manifests.
+KUBEVIRT_VERSION   ?= v1.9.1
+KUBEVIRT_SPOKES    ?= eu
+
 # ── Help ─────────────────────────────────────────────────────────────────────
 .PHONY: help
 help:
@@ -77,7 +82,7 @@ help:
 	@echo "  make deploy-wave1  Wave 1: Install all CRDs on hub + spokes"
 	@echo "  make deploy-wave2  Wave 2: Infrastructure on hub (LGTM + Dex + ingress)"
 	@echo "  make deploy-wave3  Wave 3: Hub services (Kro + binding-controller + fleet)"
-	@echo "  make deploy-wave4  Wave 4: Spokes (widget-operator + oidc-verifier + tenant RBAC)"
+	@echo "  make deploy-wave4  Wave 4: Spokes (widget-operator + oidc-verifier + tenant RBAC; KubeVirt on KUBEVIRT_SPOKES)"
 	@echo "  make deploy-cd     Enable GitOps (Flux CD) on hub"
 	@echo "  make clusters      Create kind clusters"
 	@echo ""
@@ -233,7 +238,8 @@ push-images-parallel:
 crds: $(CRDS_DIR)/kro-core-install-manifests.yaml \
       $(CRDS_DIR)/clusterprofiles-crd.yaml \
       $(CRDS_DIR)/cert-manager.crds.yaml \
-      $(CRDS_DIR)/prometheus-operator-crds.yaml
+      $(CRDS_DIR)/prometheus-operator-crds.yaml \
+      $(CRDS_DIR)/kubevirt-operator.yaml
 
 $(CRDS_DIR):
 	mkdir -p $(CRDS_DIR)
@@ -249,6 +255,9 @@ $(CRDS_DIR)/cert-manager.crds.yaml: | $(CRDS_DIR)
 
 $(CRDS_DIR)/prometheus-operator-crds.yaml: | $(CRDS_DIR)
 	curl -fsSL -o $@ https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.92.1/stripped-down-crds.yaml
+
+$(CRDS_DIR)/kubevirt-operator.yaml: | $(CRDS_DIR)
+	curl -fsSL -o $@ https://github.com/kubevirt/kubevirt/releases/download/$(KUBEVIRT_VERSION)/kubevirt-operator.yaml
 
 # ── Clusters ─────────────────────────────────────────────────────────────────
 .PHONY: clusters ensure-spoke-auth-config
@@ -440,11 +449,20 @@ deploy-wave4:
 	@for s in $(SPOKES); do \
 		echo "==> Wave 4: Installing spoke $$s"; \
 		kubectl --context kind-$$s create namespace default --dry-run=client -o yaml | kubectl --context kind-$$s apply -f - || exit 1; \
+		if echo " $(KUBEVIRT_SPOKES) " | grep -q " $$s "; then \
+			echo "  Installing KubeVirt operator $(KUBEVIRT_VERSION) on $$s"; \
+			kubectl --context kind-$$s apply -f $(CRDS_DIR)/kubevirt-operator.yaml > /dev/null || exit 1; \
+			kubectl --context kind-$$s wait --for=condition=Established crd/kubevirts.kubevirt.io --timeout=60s || exit 1; \
+		fi; \
 		helm upgrade --install $$s $(SPOKE_CHART) -f $(SPOKE_CHART)/values-$$s.yaml \
 			-n default --create-namespace --wait --timeout $(HELM_TIMEOUT) \
 			--kube-context kind-$$s || exit 1; \
 		kubectl --context kind-$$s -n default rollout status deployment/widget-operator --timeout=60s || exit 1; \
 		kubectl --context kind-$$s -n default rollout status deployment/oidc-verifier --timeout=60s || exit 1; \
+		if echo " $(KUBEVIRT_SPOKES) " | grep -q " $$s "; then \
+			echo "  Waiting for KubeVirt on $$s (operator rolls out its components)"; \
+			kubectl --context kind-$$s -n kubevirt wait kv/kubevirt --for=condition=Available --timeout=10m || exit 1; \
+		fi; \
 	done
 	@echo "==> Wave 4 complete"
 

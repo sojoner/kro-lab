@@ -271,7 +271,7 @@ make test         # must still PASS
 │   └── dex-auth-plugin/           # Dex token acquisition plugin (Go)
 ├── providers/
 │   └── cluster-inventory-api/     # ClusterProfile-backed Provider (Go)
-├── tests/e2e/                     # Chainsaw test suites (21 tests)
+├── tests/e2e/                     # Chainsaw test suites (22 tests)
 │   └── .chainsaw.yaml
 ├── docs/platform-mvp/             # Implementation docs per phase (incl. OIDC)
 ├── .claude/                       # AI assistant working docs (plans/specs)

@@ -79,3 +79,10 @@ tenants:
     dexGroups: ["acme-corp-admin", "acme-corp-developer", "acme-corp-analyst"]
   - id: globex-inc
     dexGroups: ["globex-inc-admin", "globex-inc-developer", "globex-inc-analyst"]
+
+# KubeVirt (VMs as a service). Enabled per spoke in values-<name>.yaml; the
+# spoke host needs /dev/kvm unless useEmulation is true.
+kubevirt:
+  enabled: false
+  useEmulation: false
+  imagePullPolicy: IfNotPresent
