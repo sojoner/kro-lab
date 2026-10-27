@@ -61,6 +61,10 @@ type Provider struct {
 	newCluster   func(cfg *rest.Config, scheme *runtime.Scheme) (cluster.Cluster, error)
 	tokenDir     string
 
+	// selector, when non-empty, restricts discovery to ClusterProfiles whose
+	// labels match. Set before Run; not safe to change while running.
+	selector map[string]string
+
 	mu        sync.RWMutex
 	clusters  map[string]cluster.Cluster
 	cancelFns map[string]context.CancelFunc
@@ -94,6 +98,14 @@ func NewWithTokenDir(scheme *runtime.Scheme, hubClient client.Client, pollInterv
 // connect to a real API server.
 func (p *Provider) SetClusterFactory(fn func(cfg *rest.Config, scheme *runtime.Scheme) (cluster.Cluster, error)) {
 	p.newCluster = fn
+}
+
+// SetLabelSelector restricts discovery to ClusterProfiles carrying all the
+// given labels, so a controller engages only the clusters it serves. A
+// ClusterProfile that stops matching is disengaged on the next poll. A nil or
+// empty selector engages every ClusterProfile. Call before Run.
+func (p *Provider) SetLabelSelector(selector map[string]string) {
+	p.selector = selector
 }
 
 func newRealCluster(cfg *rest.Config, scheme *runtime.Scheme) (cluster.Cluster, error) {
@@ -147,7 +159,7 @@ func (p *Provider) Run(ctx context.Context, mgr mcmanager.Manager) error {
 func (p *Provider) discover(ctx context.Context, mgr mcmanager.Manager) {
 	cps := &unstructured.UnstructuredList{}
 	cps.SetGroupVersionKind(ClusterProfileGVK)
-	if err := p.hubClient.List(ctx, cps); err != nil {
+	if err := p.hubClient.List(ctx, cps, client.MatchingLabels(p.selector)); err != nil {
 		return
 	}
 
