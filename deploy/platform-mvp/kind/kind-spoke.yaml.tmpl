@@ -2,7 +2,7 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
-    image: kindest/node:v1.30.0
+    image: __NODE_IMAGE__
     kubeadmConfigPatches:
     - |
       kind: ClusterConfiguration
@@ -15,8 +15,8 @@ nodes:
             mountPath: /etc/kubernetes/auth
             readOnly: true
     extraMounts:
-      - hostPath: __US_AUTH_DIR__
+      - hostPath: __AUTH_DIR__
         containerPath: /etc/kubernetes/auth
         readOnly: true
   - role: worker
-    image: kindest/node:v1.30.0
+    image: __NODE_IMAGE__

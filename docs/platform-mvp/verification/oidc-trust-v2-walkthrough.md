@@ -101,7 +101,7 @@ projected ServiceAccount token issued by the hub's kube-apiserver.
 │ Step 4: Authorization (Spoke RBAC)                                      │
 │                                                                         │
 │  ClusterRole + ClusterRoleBinding, both named "hub-binding-controller"  │
-│  (spoke-side, `chart/us/templates/binding-controller-rbac.yaml`):       │
+│  (spoke-side, `chart/spoke/templates/binding-controller-rbac.yaml`):       │
 │  ┌────────────────────────────────────────────────────────────────┐    │
 │  │ apiVersion: rbac.authorization.k8s.io/v1                        │    │
 │  │ kind: ClusterRole                                                │    │

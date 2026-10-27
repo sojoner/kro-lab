@@ -75,7 +75,7 @@ HUB CLUSTER                              SPOKE CLUSTER (kind-us)
 
 ## Spoke RBAC for the Controller
 
-Authentication proves *who* the controller is; it grants no permissions by itself. `chart/us/templates/binding-controller-rbac.yaml` authorizes the resulting identity to the minimum needed:
+Authentication proves *who* the controller is; it grants no permissions by itself. `chart/spoke/templates/binding-controller-rbac.yaml` authorizes the resulting identity to the minimum needed:
 
 ```yaml
 # ClusterRole: hub-binding-controller
@@ -89,7 +89,7 @@ rules:
 # ClusterRoleBinding subject: hub:system:serviceaccount:default:binding-controller
 ```
 
-`ClusterRole` (not per-tenant `Role`) is required because the controller creates Widgets across every tenant namespace — but the rules are scoped to `widgets`/`widgets/status` only, so a compromised or misbehaving controller identity cannot touch anything else on the spoke, including its own RBAC. `bindingControllerRBAC.hubIdentity` in `chart/us/values.yaml` is the single source of truth for the subject name and must match the `claimMappings.username` prefix in `authConfiguration`.
+`ClusterRole` (not per-tenant `Role`) is required because the controller creates Widgets across every tenant namespace — but the rules are scoped to `widgets`/`widgets/status` only, so a compromised or misbehaving controller identity cannot touch anything else on the spoke, including its own RBAC. `bindingControllerRBAC.hubIdentity` in `chart/spoke/values.yaml` is the single source of truth for the subject name and must match the `claimMappings.username` prefix in `authConfiguration`.
 
 ## Human Identity Flow
 
@@ -141,7 +141,7 @@ authConfiguration:
         prefix: "dex:"
 ```
 
-The `kind-us.yaml` cluster config (generated from `kind-us.yaml.tmpl` by `make render-kind-us-config`) mounts the auth file from `deploy/platform-mvp/kind/us-auth/` — resolved relative to the template, not a hardcoded path — via:
+Each spoke's kind config (generated from `kind-spoke.yaml.tmpl` by `make render-kind-config-<spoke>`) mounts its auth file from `deploy/platform-mvp/kind/<spoke>-auth/` — resolved relative to the template, not a hardcoded path — via:
 - `extraMounts` (kind node → container)
 - `apiServer.extraVolumes` (kubeadm → kube-apiserver pod)
 - `--authentication-config` flag

@@ -10,6 +10,13 @@ all running locally on `kind`.
 A binding controller (multicluster-runtime) fans expanded intents out to a spoke
 cluster running a trivial widget-operator. No cloud dependency.
 
+## Where to start
+
+- [Capabilities & Use Cases](docs/platform-mvp/15-capabilities.md) — what the platform offers and who uses it
+- [User Stories](docs/platform-mvp/16-user-stories.md) — flows per role, with diagrams
+- [How It Is Built](docs/platform-mvp/17-how-it-is-built.md) — deploy order, trust bootstrap, dev loop
+- [Architecture overview](docs/platform-mvp/00-overview.md) — full detail
+
 ## Why This Architecture
 
 The "widget" itself is a placeholder — what's being validated is the pattern underneath, and it's meant to hold up past a single kind demo:
@@ -21,7 +28,7 @@ The "widget" itself is a placeholder — what's being validated is the pattern u
 ## Architecture
 
 ```
- hub (kind-hub)                            us (kind-us)
+ hub (kind-hub)                            us / eu (kind-us, kind-eu — same chart)
  ┌──────────────────────┐                 ┌──────────────────────┐
  │ Kro RGD              │                 │ widget-operator      │
  │ GlobalWidget ──┐     │                 │  Widget CRD          │
@@ -47,6 +54,7 @@ The "widget" itself is a placeholder — what's being validated is the pattern u
 |---------|-------|---------|
 | `kind-hub` | 1 control-plane | Hub: Kro API, observability, Dex OIDC, cert-manager, Flux CD, ingress |
 | `kind-us` | 1 ctrl-plane + 1 worker | Spoke: widget-operator, oidc-verifier |
+| `kind-eu` | 1 ctrl-plane + 1 worker | Spoke (Kubernetes 1.35, labelled `offers-vms`, runs KubeVirt for the `VmSet` service): same components as `us` plus KubeVirt |
 
 ## Prerequisites
 
@@ -258,12 +266,13 @@ make test         # must still PASS
 ├── hack/platform-mvp/             # Shell scripts
 ├── platform-mvp/
 │   ├── binding-controller/        # RegionalWidgetRequest → spoke reconciler (Go)
+│   ├── vm-binding-controller/     # RegionalVmSetRequest → KubeVirt VMs on VM-capable spokes (Go)
 │   ├── widget-operator/           # Trivial spoke operator (Go)
 │   ├── oidc-verifier/             # JWKS-based JWT verifier (Go)
 │   └── dex-auth-plugin/           # Dex token acquisition plugin (Go)
 ├── providers/
 │   └── cluster-inventory-api/     # ClusterProfile-backed Provider (Go)
-├── tests/e2e/                     # Chainsaw test suites (20 tests)
+├── tests/e2e/                     # Chainsaw test suites (28 tests)
 │   └── .chainsaw.yaml
 ├── docs/platform-mvp/             # Implementation docs per phase (incl. OIDC)
 ├── .claude/                       # AI assistant working docs (plans/specs)

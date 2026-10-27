@@ -9,8 +9,8 @@ nodes:
       apiServer:
         extraArgs:
           # Default issuer (https://kubernetes.default.svc.cluster.local) is only
-          # resolvable from inside this cluster. The us spoke's
-          # AuthenticationConfiguration (chart/us/values.yaml authConfiguration.hubIssuer)
+          # resolvable from inside this cluster. Every spoke's
+          # AuthenticationConfiguration (chart/spoke/values.yaml authConfiguration.hubIssuer)
           # trusts this exact URL to validate controller SA tokens cross-cluster —
           # it must stay in sync with that value.
           service-account-issuer: "https://hub-control-plane:6443"

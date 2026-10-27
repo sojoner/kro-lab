@@ -143,8 +143,8 @@ Replace kind-us `oidc-*` CLI flags with `AuthenticationConfiguration` resource.
 
 **Changes:**
 - `deploy/platform-mvp/kind/kind-us.yaml`: Remove `oidc-*` extraArgs; add `--authentication-config` mount
-- `deploy/platform-mvp/chart/us/templates/auth-config.yaml`: NEW — `AuthenticationConfiguration` resource
-- `deploy/platform-mvp/chart/us/values.yaml`: Add `authConfiguration` section
+- `deploy/platform-mvp/chart/spoke/templates/auth-config.yaml`: NEW — `AuthenticationConfiguration` resource
+- `deploy/platform-mvp/chart/spoke/values.yaml`: Add `authConfiguration` section
 - `tests/e2e/tests/10-oidc-trust/chainsaw-test.yaml`: Update test assertions
 - `docs/platform-mvp/10-oidc-trust.md`: Update architecture docs
 
@@ -164,8 +164,8 @@ Replace token-rotator Dex password grant with projected SA tokens.
 Implement "Platform Wins" model with 3 admission policies.
 
 **Changes:**
-- `deploy/platform-mvp/chart/us/templates/admission-guardrails.yaml`: NEW
-- `deploy/platform-mvp/chart/us/templates/platform-admin-rbac.yaml`: NEW
+- `deploy/platform-mvp/chart/spoke/templates/admission-guardrails.yaml`: NEW
+- `deploy/platform-mvp/chart/spoke/templates/platform-admin-rbac.yaml`: NEW
 - `tests/e2e/tests/16-guardrails/`: NEW E2E test suite
 - `docs/platform-mvp/12-security-guardrails.md`: NEW doc
 
