@@ -141,4 +141,4 @@ In emergencies, the `failurePolicy` can be set to `Ignore` to allow all requests
 
 If policies are accidentally deleted:
 - **GitOps (Flux)**: Re-applies from git on the next reconciliation
-- **Manual**: `helm upgrade us ./deploy/platform-mvp/chart/us --set admissionPolicies.enabled=true`
+- **Manual**: `helm upgrade us ./deploy/platform-mvp/chart/spoke -f ./deploy/platform-mvp/chart/spoke/values-us.yaml --set admissionPolicies.enabled=true`

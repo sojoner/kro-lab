@@ -100,7 +100,7 @@ func tenantNamespace(obj *unstructured.Unstructured) string {
 
 ## Spoke-Side Tenant RBAC
 
-The spoke Helm chart provisions per-tenant resources via `chart/us/templates/tenant.yaml`, defining three role tiers per tenant:
+The spoke Helm chart provisions per-tenant resources via `chart/spoke/templates/tenant.yaml`, defining three role tiers per tenant:
 
 | Role | Verbs | Typical User |
 |------|-------|-------------|
@@ -191,10 +191,10 @@ graph TD
 |------|---------|
 | `chart/crds/templates/regionalwidgetrequest-crd.yaml` | CRD definition (no `spec.tenant` — tenant is a label) |
 | `platform-mvp/binding-controller/controller/reconciler.go:98-106` | `tenantNamespace()` — reads tenant from labels |
-| `chart/us/templates/tenant.yaml` | Per-tenant Namespace + 3-tier Roles + RoleBindings |
+| `chart/spoke/templates/tenant.yaml` | Per-tenant Namespace + 3-tier Roles + RoleBindings |
 
-| `chart/us/templates/admission-guardrails.yaml` | Admission policies enforced by default |
-| `chart/us/values.yaml:73-77` | Tenant definitions (acme-corp, globex-inc) with 3 Dex groups each |
+| `chart/spoke/templates/admission-guardrails.yaml` | Admission policies enforced by default |
+| `chart/spoke/values.yaml:73-77` | Tenant definitions (acme-corp, globex-inc) with 3 Dex groups each |
 | `chart/infrastructure/templates/dex.yaml:68-110` | 7 demo users with group assignments |
 | `tests/e2e/tests/13-tenant-isolation/chainsaw-test.yaml` | E2E test: label-based tenant isolation |
 | `tests/e2e/tests/19-multi-tenant-isolation/chainsaw-test.yaml` | E2E test: cross-tenant access denied |

@@ -38,36 +38,26 @@ graph TB
 ## Steps
 
 ```bash
-# Create hub (1 control-plane)
-kind create cluster --name hub --config deploy/platform-mvp/kind/kind-hub.yaml
-
-# Render kind-us.yaml from its template (resolves the auth-mount hostPath
-# relative to the template, then create us (1 control-plane + 3 workers)
-make render-kind-us-config
-kind create cluster --name us --config deploy/platform-mvp/kind/kind-us.yaml
-
-# Extract internal kubeconfig for cross-cluster access
-kind get kubeconfig --name us --internal > hack/platform-mvp/kubeconfig-us-internal
-
-# Verify cross-cluster reachability
-HUB_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' kind-hub-control-plane)
-docker exec kind-us-control-plane ping -c1 ${HUB_IP}
+# Hub first (spokes trust its CA), then every spoke in SPOKES (default: us eu).
+# Each spoke's kind config is rendered from kind-spoke.yaml.tmpl with its own
+# node image and auth-mount dir; kubeconfigs land in hack/platform-mvp/.
+make clusters
 ```
 
-Or use the script:
-```bash
-./hack/platform-mvp/create-clusters.sh
-```
+`us` runs Kubernetes v1.30.0; `eu` runs v1.35.1 because KubeVirt 1.9 needs 1.34+. Add a spoke by extending `SPOKES`, adding `KIND_NODE_IMAGE_<name>`, `chart/spoke/values-<name>.yaml` and a `fleet.clusters` entry in `chart/hub-services/values.yaml`.
+
+`./hack/platform-mvp/create-clusters.sh` and `destroy-clusters.sh` wrap `make clusters` / `make clean`.
 
 ## Files Produced
 
 | File | Purpose |
 |------|---------|
 | `deploy/platform-mvp/kind/kind-hub.yaml` | Hub cluster config (hostPort 80+443) |
-| `deploy/platform-mvp/kind/kind-us.yaml.tmpl` | Us cluster config template (1 CP + 3 workers) |
-| `deploy/platform-mvp/kind/kind-us.yaml` | Generated from the template via `make render-kind-us-config` (gitignored) |
-| `hack/platform-mvp/create-clusters.sh` | Automated cluster creation |
-| `hack/platform-mvp/destroy-clusters.sh` | Automated cluster teardown |
+| `deploy/platform-mvp/kind/kind-spoke.yaml.tmpl` | Spoke cluster config template (1 CP + 1 worker; node image + auth dir injected) |
+| `deploy/platform-mvp/kind/rendered/kind-<spoke>.yaml` | Generated from the template via `make render-kind-config-<spoke>` (gitignored) |
+| `hack/platform-mvp/render-spoke-auth-config.sh` | Renders a spoke's AuthenticationConfiguration from the chart + `values-<spoke>.yaml` |
+| `hack/platform-mvp/create-clusters.sh` | Wrapper for `make clusters` |
+| `hack/platform-mvp/destroy-clusters.sh` | Wrapper for `make clean` |
 
 ## Acceptance
 

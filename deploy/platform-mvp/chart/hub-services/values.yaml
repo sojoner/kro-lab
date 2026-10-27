@@ -5,6 +5,18 @@ dex:
   # Dex issuer URL — must match the Dex deployment in the infrastructure chart
   issuer: "https://bm4080.taildf7067.ts.net/dex"
 
+# Spoke clusters registered on the hub. Each needs a <name>-kubeconfig Secret
+# (server + CA) and a projected <name>-token in the controllers that engage it
+# (see spokeTokens). Labels let a controller engage only the clusters it serves.
+fleet:
+  clusters:
+    - name: us
+      displayName: "US Cluster"
+    - name: eu
+      displayName: "EU Cluster"
+      labels:
+        platform.example.com/offers-vms: "true"
+
 bindingController:
   replicas: 1
   metricsPort: 8080
@@ -28,4 +40,8 @@ bindingController:
     - serviceAccountToken:
         path: us-token
         audience: homelab:us-spoke
+        expirationSeconds: 3600
+    - serviceAccountToken:
+        path: eu-token
+        audience: homelab:eu-spoke
         expirationSeconds: 3600

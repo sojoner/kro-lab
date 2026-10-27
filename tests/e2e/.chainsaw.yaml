@@ -21,3 +21,5 @@ spec:
       kubeconfig: ./kubeconfig-hub
     us:
       kubeconfig: ./kubeconfig-us-internal
+    eu:
+      kubeconfig: ./kubeconfig-eu-internal

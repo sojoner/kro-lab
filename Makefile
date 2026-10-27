@@ -13,17 +13,25 @@ export PATH := $(shell go env GOPATH)/bin:$(PATH)
 
 # ── Externalized config ──────────────────────────────────────────────────────
 KIND_HUB          ?= hub
-KIND_US           ?= us
 KIND_HUB_CONFIG   ?= deploy/platform-mvp/kind/kind-hub.yaml
-KIND_US_CONFIG_TMPL ?= deploy/platform-mvp/kind/kind-us.yaml.tmpl
-KIND_US_CONFIG    ?= deploy/platform-mvp/kind/kind-us.yaml
+
+# Spoke clusters (kind cluster name == spoke name == ClusterProfile name ==
+# chart/spoke/values-<name>.yaml). Adding a spoke = one entry here plus a
+# KIND_NODE_IMAGE_<name>, a values file, and a hub-services fleet entry.
+SPOKES            ?= us eu
+KIND_NODE_IMAGE_us ?= kindest/node:v1.30.0
+# KubeVirt 1.9 supports Kubernetes 1.34-1.36 only.
+KIND_NODE_IMAGE_eu ?= kindest/node:v1.35.1
+KIND_SPOKE_CONFIG_TMPL ?= deploy/platform-mvp/kind/kind-spoke.yaml.tmpl
+KIND_RENDER_DIR   ?= deploy/platform-mvp/kind/rendered
+# Per-spoke apiserver auth dir, mounted into the spoke's control plane.
 # Readable/writable by the invoking user (no root-owned /tmp race, survives
-# host reboots) — always resolved relative to KIND_US_CONFIG_TMPL's own
-# location, never a machine-specific absolute path.
-US_AUTH_DIR       ?= $(abspath $(dir $(KIND_US_CONFIG_TMPL))us-auth)
+# host reboots) — always resolved relative to KIND_SPOKE_CONFIG_TMPL's own
+# location, never a machine-specific absolute path. Spoke X uses X-auth/.
+SPOKE_AUTH_BASE   ?= $(abspath $(dir $(KIND_SPOKE_CONFIG_TMPL)))
 
 HUB_CHART          ?= deploy/platform-mvp/chart/infrastructure
-US_CHART           ?= deploy/platform-mvp/chart/us
+SPOKE_CHART        ?= deploy/platform-mvp/chart/spoke
 CRDS_CHART         ?= deploy/platform-mvp/chart/crds
 HUBSVC_CHART       ?= deploy/platform-mvp/chart/hub-services
 HELM_TIMEOUT       ?= 15m
@@ -34,7 +42,7 @@ GRAFANA_PF_PORT    ?= 3000
 OBS_NS             ?= monitoring
 
 BC_KUBECONFIG      ?= $(HOME)/.kube/config
-BC_INTERNAL_KC     ?= hack/platform-mvp/kubeconfig-us-internal
+SPOKE_KC_DIR       ?= hack/platform-mvp
 
 CHAINSAW_DIR       ?= tests/e2e
 CHAINSAW_REPORT    ?= chainsaw-report.json
@@ -66,10 +74,10 @@ help:
 	@echo ""
 	@echo "Deploy (4-wave Helm chart decomposition):"
 	@echo "  make deploy        Full deployment (clusters + 4 waves)"
-	@echo "  make deploy-wave1  Wave 1: Install all CRDs on hub + us"
+	@echo "  make deploy-wave1  Wave 1: Install all CRDs on hub + spokes"
 	@echo "  make deploy-wave2  Wave 2: Infrastructure on hub (LGTM + Dex + ingress)"
 	@echo "  make deploy-wave3  Wave 3: Hub services (Kro + binding-controller + fleet)"
-	@echo "  make deploy-wave4  Wave 4: US spoke (widget-operator + oidc-verifier)"
+	@echo "  make deploy-wave4  Wave 4: Spokes (widget-operator + oidc-verifier + tenant RBAC)"
 	@echo "  make deploy-cd     Enable GitOps (Flux CD) on hub"
 	@echo "  make clusters      Create kind clusters"
 	@echo ""
@@ -243,80 +251,80 @@ $(CRDS_DIR)/prometheus-operator-crds.yaml: | $(CRDS_DIR)
 	curl -fsSL -o $@ https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.92.1/stripped-down-crds.yaml
 
 # ── Clusters ─────────────────────────────────────────────────────────────────
-.PHONY: clusters ensure-us-auth-config render-kind-us-config
+.PHONY: clusters ensure-spoke-auth-config
 
-# KIND_US_CONFIG is generated from KIND_US_CONFIG_TMPL on every run so its
-# extraMounts hostPath always points at US_AUTH_DIR, resolved relative to the
-# template's own location rather than hardcoded to one machine's checkout path.
-render-kind-us-config:
-	@mkdir -p "$(US_AUTH_DIR)"
-	@sed 's|__US_AUTH_DIR__|$(US_AUTH_DIR)|' $(KIND_US_CONFIG_TMPL) > $(KIND_US_CONFIG)
+# Each spoke's kind config is generated from KIND_SPOKE_CONFIG_TMPL on every run
+# so its extraMounts hostPath always points at that spoke's auth dir, resolved
+# relative to the template's own location rather than hardcoded to one
+# machine's checkout path.
+render-kind-config-%:
+	@mkdir -p "$(KIND_RENDER_DIR)" "$(SPOKE_AUTH_BASE)/$*-auth"
+	@sed -e 's|__AUTH_DIR__|$(SPOKE_AUTH_BASE)/$*-auth|' \
+		-e 's|__NODE_IMAGE__|$(KIND_NODE_IMAGE_$*)|' \
+		$(KIND_SPOKE_CONFIG_TMPL) > $(KIND_RENDER_DIR)/kind-$*.yaml
 
-# Re-derive the us apiserver's AuthenticationConfiguration from the chart on
-# every `make clusters` / `make deploy` / `make validate` run so a stale or
+# Re-derive each spoke apiserver's AuthenticationConfiguration from the chart
+# on every `make clusters` / `make deploy` / `make validate` run so a stale or
 # missing file self-heals without a separate manual step. Content comes from
-# chart/us/templates/auth-config.yaml (values.yaml is the single source of
-# truth) via hack/platform-mvp/render-us-auth-config.sh — never
-# hand-duplicate it here. Requires the hub cluster to already exist: the hub
-# issuer's trust anchor is the hub apiserver's own CA (kind's cert isn't
-# publicly trusted), extracted fresh each run rather than assumed stable.
+# chart/spoke/templates/auth-config.yaml + values-<spoke>.yaml via
+# hack/platform-mvp/render-spoke-auth-config.sh — never hand-duplicate it
+# here. Requires the hub cluster to already exist: the hub issuer's trust
+# anchor is the hub apiserver's own CA (kind's cert isn't publicly trusted),
+# extracted fresh each run rather than assumed stable.
 # The Dex issuer's CA (the cert-manager self-signed cert backing the ingress,
 # secret monitoring/ingress-tls) usually doesn't exist yet the first time this
 # runs (before Wave 2) — included once it does. The apiserver hot-reloads
-# this file, so a second `make ensure-us-auth-config` after Wave 2 (see
+# this file, so a second `make ensure-spoke-auth-config` after Wave 2 (see
 # `deploy`) picks it up without restarting anything.
-ensure-us-auth-config: render-kind-us-config
-	@mkdir -p "$(US_AUTH_DIR)" 2>/dev/null || { \
-		echo "ERROR: cannot create $(US_AUTH_DIR) (likely root-owned after a host reboot)."; \
-		echo "  Run this once, then retry:"; \
-		echo "  ./hack/platform-mvp/render-us-auth-config.sh $(US_CHART) | sudo tee $(US_AUTH_DIR)/authentication-configuration.yaml > /dev/null"; \
+ensure-spoke-auth-config: $(addprefix ensure-auth-config-,$(SPOKES))
+
+ensure-auth-config-%: render-kind-config-%
+	@mkdir -p "$(SPOKE_AUTH_BASE)/$*-auth" 2>/dev/null || { \
+		echo "ERROR: cannot create $(SPOKE_AUTH_BASE)/$*-auth (likely root-owned after a host reboot)."; \
 		exit 1; \
 	}
-	@docker exec $(KIND_HUB)-control-plane cat /etc/kubernetes/pki/ca.crt > "$(US_AUTH_DIR)/hub-ca.crt" || { \
+	@docker exec $(KIND_HUB)-control-plane cat /etc/kubernetes/pki/ca.crt > "$(SPOKE_AUTH_BASE)/$*-auth/hub-ca.crt" || { \
 		echo "ERROR: cannot read hub CA cert — is the hub cluster up? (kind get clusters)"; \
 		exit 1; \
 	}
-	@kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) get secret ingress-tls -o jsonpath='{.data.ca\.crt}' 2>/dev/null | base64 -d > "$(US_AUTH_DIR)/dex-ca.crt" || rm -f "$(US_AUTH_DIR)/dex-ca.crt"
-	@DEX_CA=""; [ -s "$(US_AUTH_DIR)/dex-ca.crt" ] && DEX_CA="$(US_AUTH_DIR)/dex-ca.crt"; \
-	./hack/platform-mvp/render-us-auth-config.sh $(US_CHART) "$(US_AUTH_DIR)/hub-ca.crt" "$$DEX_CA" > "$(US_AUTH_DIR)/authentication-configuration.yaml" 2>/dev/null || { \
-		echo "ERROR: cannot write $(US_AUTH_DIR)/authentication-configuration.yaml (likely root-owned after a host reboot)."; \
+	@kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) get secret ingress-tls -o jsonpath='{.data.ca\.crt}' 2>/dev/null | base64 -d > "$(SPOKE_AUTH_BASE)/$*-auth/dex-ca.crt" || rm -f "$(SPOKE_AUTH_BASE)/$*-auth/dex-ca.crt"
+	@DEX_CA=""; [ -s "$(SPOKE_AUTH_BASE)/$*-auth/dex-ca.crt" ] && DEX_CA="$(SPOKE_AUTH_BASE)/$*-auth/dex-ca.crt"; \
+	./hack/platform-mvp/render-spoke-auth-config.sh $(SPOKE_CHART) $(SPOKE_CHART)/values-$*.yaml "$(SPOKE_AUTH_BASE)/$*-auth/hub-ca.crt" "$$DEX_CA" > "$(SPOKE_AUTH_BASE)/$*-auth/authentication-configuration.yaml" 2>/dev/null || { \
+		echo "ERROR: cannot write $(SPOKE_AUTH_BASE)/$*-auth/authentication-configuration.yaml (likely root-owned after a host reboot)."; \
 		echo "  Run this once, then retry:"; \
-		echo "  ./hack/platform-mvp/render-us-auth-config.sh $(US_CHART) $(US_AUTH_DIR)/hub-ca.crt | sudo tee $(US_AUTH_DIR)/authentication-configuration.yaml > /dev/null"; \
+		echo "  ./hack/platform-mvp/render-spoke-auth-config.sh $(SPOKE_CHART) $(SPOKE_CHART)/values-$*.yaml $(SPOKE_AUTH_BASE)/$*-auth/hub-ca.crt | sudo tee $(SPOKE_AUTH_BASE)/$*-auth/authentication-configuration.yaml > /dev/null"; \
 		exit 1; \
 	}
-	@echo "  us AuthenticationConfiguration ready at $(US_AUTH_DIR)/authentication-configuration.yaml"
+	@echo "  $* AuthenticationConfiguration ready at $(SPOKE_AUTH_BASE)/$*-auth/authentication-configuration.yaml"
 
-# hub must exist before ensure-us-auth-config (needs its CA cert), and
-# ensure-us-auth-config must finish before the us cluster starts (it reads
-# the host-mounted file at kube-apiserver boot) — no longer parallel.
+# hub must exist before ensure-spoke-auth-config (needs its CA cert), and
+# that must finish before any spoke starts (it reads the host-mounted file at
+# kube-apiserver boot) — no longer parallel.
 clusters:
 	@echo "==> Creating hub cluster"
 	@if ! kind get clusters 2>/dev/null | grep -qx "$(KIND_HUB)"; then \
 		kind create cluster --name $(KIND_HUB) --config $(KIND_HUB_CONFIG); \
 	fi
-	$(MAKE) ensure-us-auth-config
-	@echo "==> Creating us cluster"
-	@if ! kind get clusters 2>/dev/null | grep -qx "$(KIND_US)"; then \
-		kind create cluster --name $(KIND_US) --config $(KIND_US_CONFIG); \
-	fi
+	$(MAKE) ensure-spoke-auth-config
+	@for s in $(SPOKES); do \
+		echo "==> Creating $$s cluster"; \
+		if ! kind get clusters 2>/dev/null | grep -qx "$$s"; then \
+			kind create cluster --name $$s --config $(KIND_RENDER_DIR)/kind-$$s.yaml || exit 1; \
+		fi; \
+	done
 	@echo "  Verifying nodes..."
 	kubectl --context kind-$(KIND_HUB) get nodes
-	kubectl --context kind-$(KIND_US) get nodes
-	@echo "  Extracting internal kubeconfig..."
-	kind get kubeconfig --name $(KIND_US) --internal > $(BC_INTERNAL_KC)
-	@echo "  Generating E2E kubeconfigs..."
+	@for s in $(SPOKES); do kubectl --context kind-$$s get nodes || exit 1; done
+	@echo "  Extracting internal kubeconfigs + generating E2E kubeconfigs..."
 	kind get kubeconfig --name $(KIND_HUB) > $(CHAINSAW_DIR)/kubeconfig-hub
-	kind get kubeconfig --name $(KIND_US) --internal > $(CHAINSAW_DIR)/kubeconfig-us-internal
-	@US_IP=$$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(KIND_US)-control-plane 2>/dev/null); \
-	if [ -n "$$US_IP" ]; then \
-		sed -i "s|https://us-control-plane:6443|https://$$US_IP:6443|" $(CHAINSAW_DIR)/kubeconfig-us-internal; \
-	fi
-	@HUB_IP=$$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(KIND_HUB)-control-plane 2>/dev/null); \
-	if [ -n "$$HUB_IP" ]; then \
-		docker exec $(KIND_US)-control-plane sh -c "command -v curl >/dev/null 2>&1 && curl -s --connect-timeout 2 http://$$HUB_IP:6443 >/dev/null 2>&1" 2>/dev/null || true; \
-		docker exec $(KIND_US)-control-plane sh -c "command -v wget >/dev/null 2>&1 && wget -q --timeout=2 -O /dev/null http://$$HUB_IP:6443" 2>/dev/null || true; \
-		echo "  Cross-cluster reachability OK"; \
-	fi
+	@for s in $(SPOKES); do \
+		kind get kubeconfig --name $$s --internal > $(SPOKE_KC_DIR)/kubeconfig-$$s-internal; \
+		kind get kubeconfig --name $$s --internal > $(CHAINSAW_DIR)/kubeconfig-$$s-internal; \
+		IP=$$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $$s-control-plane 2>/dev/null); \
+		if [ -n "$$IP" ]; then \
+			sed -i "s|https://$$s-control-plane:6443|https://$$IP:6443|" $(CHAINSAW_DIR)/kubeconfig-$$s-internal; \
+		fi; \
+	done
 	@echo "==> Clusters ready"
 
 # ── Deploy ───────────────────────────────────────────────────────────────────
@@ -333,7 +341,7 @@ deploy: crds
 	$(MAKE) push-images-parallel
 	@echo "==> Wave 1: CRDs on hub + us"
 	$(MAKE) deploy-wave1
-	@echo "==> Wave 2 (infra on hub) + Wave 4 (US spoke) in parallel"
+	@echo "==> Wave 2 (infra on hub) + Wave 4 (spokes) in parallel"
 	@$(MAKE) --no-print-directory deploy-wave2 & \
 	$(MAKE) --no-print-directory deploy-wave4 & \
 	wait
@@ -341,24 +349,28 @@ deploy: crds
 	$(MAKE) deploy-wave2
 	@echo "  Waiting for ingress-tls cert (Dex CA source) to be issued..."
 	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) wait --for=jsonpath='{.data.ca\.crt}' secret/ingress-tls --timeout=60s
-	@echo "  Refreshing us AuthenticationConfiguration (Dex CA now available)..."
-	$(MAKE) ensure-us-auth-config
+	@echo "  Refreshing spoke AuthenticationConfigurations (Dex CA now available)..."
+	$(MAKE) ensure-spoke-auth-config
 	@echo "==> Wave 3: Hub services on hub"
 	$(MAKE) deploy-wave3
 	@echo "==> Platform deploy complete (Flux not yet installed — run 'make deploy-cd' for GitOps)"
 
 # ── Wave 1: CRDs (both hub and us, cluster-scoped) ──────────────────────────
 deploy-wave1: crds
-	@echo "==> Wave 1: Installing platform CRDs on hub + us"
+	@echo "==> Wave 1: Installing platform CRDs on hub + spokes"
 	helm upgrade --install crds $(CRDS_CHART) \
 		--create-namespace --wait --timeout $(HELM_TIMEOUT) \
 		--kube-context kind-$(KIND_HUB)
-	helm upgrade --install crds $(CRDS_CHART) \
-		--create-namespace --wait --timeout $(HELM_TIMEOUT) \
-		--kube-context kind-$(KIND_US)
+	@for s in $(SPOKES); do \
+		helm upgrade --install crds $(CRDS_CHART) \
+			--create-namespace --wait --timeout $(HELM_TIMEOUT) \
+			--kube-context kind-$$s || exit 1; \
+	done
 	@echo "  Waiting for Kro CRDs..."
 	kubectl --context kind-$(KIND_HUB) wait --for=condition=Established crd/resourcegraphdefinitions.kro.run --timeout=30s
-	kubectl --context kind-$(KIND_US) wait --for=condition=Established crd/widgets.platform.example.com --timeout=30s
+	@for s in $(SPOKES); do \
+		kubectl --context kind-$$s wait --for=condition=Established crd/widgets.platform.example.com --timeout=30s || exit 1; \
+	done
 	@echo "==> Wave 1 complete"
 
 # ── Wave 2: Infrastructure (hub context) ──────────────────────────────────────
@@ -398,18 +410,20 @@ deploy-wave2:
 # ── Wave 3: Hub services (hub context) ────────────────────────────────────────
 deploy-wave3:
 	@echo "==> Wave 3: Installing hub services on hub"
-	@if [ ! -f $(BC_INTERNAL_KC) ]; then \
-		kind get kubeconfig --name $(KIND_US) --internal > $(BC_INTERNAL_KC); \
-	fi
+	@for s in $(SPOKES); do \
+		[ -f $(SPOKE_KC_DIR)/kubeconfig-$$s-internal ] || kind get kubeconfig --name $$s --internal > $(SPOKE_KC_DIR)/kubeconfig-$$s-internal; \
+	done
 	kubectl --context kind-$(KIND_HUB) create namespace kro-system 2>/dev/null || true
 	helm upgrade --install hub-services $(HUBSVC_CHART) \
 		-n default --create-namespace --timeout $(HELM_TIMEOUT) \
 		-f $(HUBSVC_CHART)/e2e-values.yaml \
 		--kube-context kind-$(KIND_HUB)
 	@echo "  Creating secrets..."
-	kubectl --context kind-$(KIND_HUB) create secret generic us-kubeconfig \
-		--from-file=value=$(BC_INTERNAL_KC) \
-		--dry-run=client -o yaml | kubectl --context kind-$(KIND_HUB) apply -f - &
+	@for s in $(SPOKES); do \
+		kubectl --context kind-$(KIND_HUB) create secret generic $$s-kubeconfig \
+			--from-file=value=$(SPOKE_KC_DIR)/kubeconfig-$$s-internal \
+			--dry-run=client -o yaml | kubectl --context kind-$(KIND_HUB) apply -f - || exit 1; \
+	done
 	kubectl --context kind-$(KIND_HUB) create secret generic binding-controller-dex \
 		--from-literal=client-secret=us-spoke-controller-secret-demo \
 		--dry-run=client -o yaml | kubectl --context kind-$(KIND_HUB) apply -f - &
@@ -421,17 +435,17 @@ deploy-wave3:
 	kubectl --context kind-$(KIND_HUB) -n kro-system rollout status deployment/kro --timeout=2m
 	@echo "==> Wave 3 complete"
 
-# ── Wave 4: US spoke (us context) ─────────────────────────────────────────────
+# ── Wave 4: Spokes (one chart, per-spoke values) ─────────────────────────────
 deploy-wave4:
-	@echo "==> Wave 4: Installing US spoke on us"
-	kubectl --context kind-$(KIND_US) create namespace default --dry-run=client -o yaml | kubectl apply -f -
-	helm upgrade --install us $(US_CHART) \
-		-n default --create-namespace --wait --timeout $(HELM_TIMEOUT) \
-		--kube-context kind-$(KIND_US)
-	@echo "  Rolling out widget-operator..."
-	kubectl --context kind-$(KIND_US) -n default rollout status deployment/widget-operator --timeout=60s
-	@echo "  Rolling out oidc-verifier..."
-	kubectl --context kind-$(KIND_US) -n default rollout status deployment/oidc-verifier --timeout=60s
+	@for s in $(SPOKES); do \
+		echo "==> Wave 4: Installing spoke $$s"; \
+		kubectl --context kind-$$s create namespace default --dry-run=client -o yaml | kubectl --context kind-$$s apply -f - || exit 1; \
+		helm upgrade --install $$s $(SPOKE_CHART) -f $(SPOKE_CHART)/values-$$s.yaml \
+			-n default --create-namespace --wait --timeout $(HELM_TIMEOUT) \
+			--kube-context kind-$$s || exit 1; \
+		kubectl --context kind-$$s -n default rollout status deployment/widget-operator --timeout=60s || exit 1; \
+		kubectl --context kind-$$s -n default rollout status deployment/oidc-verifier --timeout=60s || exit 1; \
+	done
 	@echo "==> Wave 4 complete"
 
 # Legacy aliases
@@ -477,16 +491,16 @@ chainsaw-runner:
 	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) delete secret kubeconfigs --ignore-not-found
 	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) create secret generic kubeconfigs \
 		--from-file=hub="$(HOME)/.kube/config" \
-		--from-file=us="$(BC_INTERNAL_KC)" \
+		$(foreach s,$(SPOKES),--from-file=$(s)="$(SPOKE_KC_DIR)/kubeconfig-$(s)-internal") \
 		--dry-run=client -o yaml | kubectl apply -f -
 
 # ── Validate ─────────────────────────────────────────────────────────────────
 .PHONY: validate
-validate: ensure-us-auth-config
+validate: ensure-spoke-auth-config
 	@echo "==> Running full Chainsaw E2E test suite"
 	@mkdir -p $(CHAINSAW_DIR)
 	kind get kubeconfig --name $(KIND_HUB) > $(CHAINSAW_DIR)/kubeconfig-hub
-	kind get kubeconfig --name $(KIND_US) > $(CHAINSAW_DIR)/kubeconfig-us-internal
+	@for s in $(SPOKES); do kind get kubeconfig --name $$s > $(CHAINSAW_DIR)/kubeconfig-$$s-internal || exit 1; done
 	cd $(CHAINSAW_DIR) && chainsaw test . --test-dir tests --fail-fast=false \
 		--report-format JSON --report-name $(CHAINSAW_REPORT)
 
@@ -509,9 +523,9 @@ grafana-url:
 .PHONY: clean clean-artifacts
 clean:
 	kind delete cluster --name $(KIND_HUB) 2>/dev/null || true
-	kind delete cluster --name $(KIND_US) 2>/dev/null || true
-	rm -f $(BC_INTERNAL_KC)
-	rm -f $(CHAINSAW_DIR)/kubeconfig-hub $(CHAINSAW_DIR)/kubeconfig-us-internal $(CHAINSAW_DIR)/$(CHAINSAW_REPORT)
+	@for s in $(SPOKES); do kind delete cluster --name $$s 2>/dev/null || true; done
+	@for s in $(SPOKES); do rm -f $(SPOKE_KC_DIR)/kubeconfig-$$s-internal $(CHAINSAW_DIR)/kubeconfig-$$s-internal; done
+	rm -f $(CHAINSAW_DIR)/kubeconfig-hub $(CHAINSAW_DIR)/$(CHAINSAW_REPORT)
 
 clean-artifacts:
 	rm -rf $(OUT_DIR) coverage-root.out coverage-bc.out coverage-wo.out

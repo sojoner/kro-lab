@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
+# Thin wrapper: teardown lives in the Makefile (iterates SPOKES).
 set -euo pipefail
-
-echo "Destroying clusters..."
-kind delete cluster --name hub || true
-kind delete cluster --name us || true
-rm -f "$(dirname "${BASH_SOURCE[0]}")/kubeconfig-us-internal"
-rm -rf /tmp/kro-us-auth
-echo "Clusters destroyed."
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../.."
+exec make clean
