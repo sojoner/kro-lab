@@ -73,7 +73,7 @@ mindmap
 | C7 | Observability ✅ | Metrics per tenant and region, 3 dashboards, audit logs in Loki | tests 07, 09, 12, 15 |
 | C8 | Continuous verification ✅ | Chainsaw suite every 2 min in-cluster, or `make validate` | test 08 |
 | C9 | GitOps ✅ | Flux reconciles the hub charts (`make deploy-cd`) | manual |
-| C10 | VM tiers 🚧 | `VmSet` of S (1 vCPU, 1 GiB) or M (2 vCPU, 2 GiB) CirrOS VMs on KVM, per tenant | planned tests 25–30 |
+| C10 | VM tiers 🚧 | `VmSet` of S (1 vCPU, 1 GiB) or M (2 vCPU, 2 GiB) CirrOS VMs on KVM, per tenant. Hub API ✅ (validated input, tier mapping, SSH-key Secret); VM controller 🚧 | test 25 (hub half); planned 26–30 |
 
 ¹ Test 23 proves `eu` is registered. A `GlobalWidget{regions:[us,eu]}` was verified by hand: both Widgets reached `Ready`. An automated test is planned (test 30).
 

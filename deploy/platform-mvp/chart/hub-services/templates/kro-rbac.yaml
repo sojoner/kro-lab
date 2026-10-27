@@ -22,3 +22,33 @@ rules:
       - patch
       - update
       - watch
+  - apiGroups:
+      - platform.example.com
+    resources:
+      - vmsets
+      - vmsets/status
+      - vmsets/finalizers
+      - regionalvmsetrequests
+      - regionalvmsetrequests/status
+      - regionalvmsetrequests/finalizers
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  # VmSet emits the cloud-init Secret on the hub.
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch

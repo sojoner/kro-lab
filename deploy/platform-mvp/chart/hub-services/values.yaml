@@ -17,6 +17,21 @@ fleet:
       labels:
         platform.example.com/offers-vms: "true"
 
+# VmSet service (VM tiers). Tier names become the allowed `size` values.
+vmSet:
+  tiers:
+    S: { cpu: 1, memory: 1Gi }
+    M: { cpu: 2, memory: 2Gi }
+  defaultSize: S
+  maxReplicas: 3
+  image: quay.io/kubevirt/cirros-container-disk-demo:v1.9.1
+  guestUser: cirros
+  # Printed to the VM's serial console once cloud-init has run; used by tests.
+  cloudInitMarker: platform-cloudinit-ok
+  # Restricts sshPublicKey to key types/characters that cannot break out of the
+  # single-quoted shell line in the generated user-data.
+  sshPublicKeyPattern: "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+( [A-Za-z0-9@._-]+)?$"
+
 bindingController:
   replicas: 1
   metricsPort: 8080
