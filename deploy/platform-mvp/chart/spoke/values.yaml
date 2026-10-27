@@ -86,3 +86,10 @@ kubevirt:
   enabled: false
   useEmulation: false
   imagePullPolicy: IfNotPresent
+
+# RBAC for the hub's vm-binding-controller on VM-capable spokes. Namespaces
+# beyond the tenants (e.g. the fallback namespace) go in extraNamespaces.
+vmBindingControllerRBAC:
+  enabled: false
+  hubIdentity: "hub:system:serviceaccount:default:vm-binding-controller"
+  extraNamespaces: [default]

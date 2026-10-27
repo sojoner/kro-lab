@@ -8,3 +8,6 @@ authConfiguration:
 
 kubevirt:
   enabled: true
+
+vmBindingControllerRBAC:
+  enabled: true

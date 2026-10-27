@@ -55,11 +55,13 @@ BC_DIR             ?= platform-mvp/binding-controller
 WO_DIR             ?= platform-mvp/widget-operator
 OV_DIR             ?= platform-mvp/oidc-verifier
 DAP_DIR            ?= platform-mvp/dex-auth-plugin
+VMBC_DIR           ?= platform-mvp/vm-binding-controller
 
 BC_IMAGE           ?= $(DOCKER_REGISTRY)/binding-controller:$(IMAGE_TAG)
 WO_IMAGE           ?= $(DOCKER_REGISTRY)/widget-operator:$(IMAGE_TAG)
 OV_IMAGE           ?= $(DOCKER_REGISTRY)/oidc-verifier:$(IMAGE_TAG)
 DAP_IMAGE          ?= $(DOCKER_REGISTRY)/dex-auth-plugin:$(IMAGE_TAG)
+VMBC_IMAGE         ?= $(DOCKER_REGISTRY)/vm-binding-controller:$(IMAGE_TAG)
 
 CRDS_DIR           ?= deploy/platform-mvp/crds
 OUT_DIR            ?= bin
@@ -113,8 +115,8 @@ help:
 	@echo "  make verify-all         Full clean-room: clean → deploy → validate → deploy-cd"
 
 # ── Test ─────────────────────────────────────────────────────────────────────
-.PHONY: test test-root test-bc test-wo test-ov test-dap test-race test-cover
-test: test-root test-bc test-wo test-ov test-dap
+.PHONY: test test-root test-bc test-wo test-ov test-dap test-vmbc test-race test-cover
+test: test-root test-bc test-wo test-ov test-dap test-vmbc
 	@echo "==> All unit tests passed"
 
 test-root:
@@ -132,12 +134,16 @@ test-ov:
 test-dap:
 	cd $(DAP_DIR) && go test ./... -count=1
 
+test-vmbc:
+	cd $(VMBC_DIR) && go test ./... -count=1
+
 test-race:
 	go test -race ./... -count=1
 	cd $(BC_DIR) && go test -race ./... -count=1
 	cd $(WO_DIR) && go test -race ./... -count=1
 	cd $(OV_DIR) && go test -race ./... -count=1
 	cd $(DAP_DIR) && go test -race ./... -count=1
+	cd $(VMBC_DIR) && go test -race ./... -count=1
 
 test-cover:
 	go test -coverprofile=coverage-root.out ./...
@@ -154,6 +160,7 @@ lint:
 	cd $(BC_DIR) && go vet ./...
 	cd $(WO_DIR) && go vet ./...
 	cd $(OV_DIR) && go vet ./...
+	cd $(VMBC_DIR) && go vet ./...
 	@if [ -n "$$(gofmt -l .)" ]; then \
 		echo "ERROR: files not formatted:"; \
 		gofmt -l .; \
@@ -165,6 +172,7 @@ lint-fix:
 	cd $(BC_DIR) && gofmt -w .
 	cd $(WO_DIR) && gofmt -w .
 	cd $(OV_DIR) && gofmt -w .
+	cd $(VMBC_DIR) && gofmt -w .
 	go vet ./...
 	cd $(BC_DIR) && go vet ./...
 	cd $(WO_DIR) && go vet ./...
@@ -179,9 +187,9 @@ build-bc:
 	cd $(BC_DIR) && go build -o ../../$(BC_BIN) .
 
 # ── Docker images (build only) ───────────────────────────────────────────────
-.PHONY: build-images build-bc-image build-wo-image build-ov-image build-dap-image
+.PHONY: build-images build-bc-image build-wo-image build-ov-image build-dap-image build-vmbc-image
 
-build-images: build-bc-image build-wo-image build-ov-image build-dap-image
+build-images: build-bc-image build-wo-image build-ov-image build-dap-image build-vmbc-image
 
 build-bc-image:
 	@echo "==> Building $(BC_IMAGE)"
@@ -199,6 +207,10 @@ build-dap-image:
 	@echo "==> Building $(DAP_IMAGE)"
 	docker build -f $(DAP_DIR)/Dockerfile -t $(DAP_IMAGE) .
 
+build-vmbc-image:
+	@echo "==> Building $(VMBC_IMAGE)"
+	docker build -f $(VMBC_DIR)/Dockerfile -t $(VMBC_IMAGE) .
+
 # Build all images in parallel
 build-images-parallel:
 	@echo "==> Building all images in parallel"
@@ -206,13 +218,14 @@ build-images-parallel:
 	$(MAKE) --no-print-directory build-wo-image & \
 	$(MAKE) --no-print-directory build-ov-image & \
 	$(MAKE) --no-print-directory build-dap-image & \
+	$(MAKE) --no-print-directory build-vmbc-image & \
 	wait
 	@echo "==> All images built"
 
 # ── Docker push (parallel by default) ────────────────────────────────────────
-.PHONY: push-images push-bc push-wo push-ov push-dap
+.PHONY: push-images push-bc push-wo push-ov push-dap push-vmbc
 
-push-images: push-bc push-wo push-ov push-dap
+push-images: push-bc push-wo push-ov push-dap push-vmbc
 
 push-bc:
 	docker push $(BC_IMAGE)
@@ -222,6 +235,8 @@ push-ov:
 	docker push $(OV_IMAGE)
 push-dap:
 	docker push $(DAP_IMAGE)
+push-vmbc:
+	docker push $(VMBC_IMAGE)
 
 push-images-parallel:
 	@echo "==> Pushing all images to $(DOCKER_REGISTRY)"
@@ -229,6 +244,7 @@ push-images-parallel:
 	docker push $(WO_IMAGE) & \
 	docker push $(OV_IMAGE) & \
 	docker push $(DAP_IMAGE) & \
+	docker push $(VMBC_IMAGE) & \
 	wait
 	@echo "==> All images pushed"
 

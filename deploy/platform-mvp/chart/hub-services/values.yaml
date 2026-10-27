@@ -32,6 +32,32 @@ vmSet:
   # single-quoted shell line in the generated user-data.
   sshPublicKeyPattern: "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+( [A-Za-z0-9@._-]+)?$"
 
+# Places VmSet requests on VM-capable spokes as KubeVirt VMs.
+vmBindingController:
+  enabled: true
+  replicas: 1
+  image:
+    repository: sojoner/vm-binding-controller
+    tag: dev
+    pullPolicy: Always
+  # Numeric UID of the distroless `nonroot` user; kubelet cannot verify the name.
+  runAsUser: 65532
+  # Only ClusterProfiles carrying these labels are engaged (see fleet.clusters).
+  clusterSelector: "platform.example.com/offers-vms=true"
+  runStrategy: Always
+  requeueInterval: 30s
+  pollInterval: 10s
+  defaultNamespace: default
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+  # One projected token per VM-capable spoke; path must be <clusterName>-token.
+  spokeTokens:
+    - serviceAccountToken:
+        path: eu-token
+        audience: homelab:eu-spoke
+        expirationSeconds: 3600
+
 bindingController:
   replicas: 1
   metricsPort: 8080
