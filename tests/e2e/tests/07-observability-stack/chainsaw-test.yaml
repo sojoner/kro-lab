@@ -61,10 +61,10 @@ spec:
     - script:
         timeout: 60s
         content: |
-          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-grafana 3000:80 &
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-grafana 3007:80 &
           PF_PID=$!
           sleep 5
-          HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/health || echo "000")
+          HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3007/api/health || echo "000")
           kill $PF_PID 2>/dev/null || true
           [ "$HEALTH" = "200" ] || exit 1
     cluster: hub

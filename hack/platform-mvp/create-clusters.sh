@@ -22,8 +22,11 @@ echo "Rendering kind-us.yaml from template (extraMounts hostPath -> ${US_AUTH_DI
 mkdir -p "${US_AUTH_DIR}"
 sed "s|__US_AUTH_DIR__|${US_AUTH_DIR}|" "${US_CONFIG_TMPL}" > "${US_CONFIG}"
 
+echo "Extracting hub CA cert (trust anchor for the hub issuer; kind's cert isn't publicly trusted)..."
+docker exec hub-control-plane cat /etc/kubernetes/pki/ca.crt > "${US_AUTH_DIR}/hub-ca.crt"
+
 echo "Preparing us AuthenticationConfiguration from chart/us/templates/auth-config.yaml (single source of truth, see chart/us/values.yaml)..."
-"${SCRIPT_DIR}/render-us-auth-config.sh" "${US_CHART}" > "${US_AUTH_DIR}/authentication-configuration.yaml"
+"${SCRIPT_DIR}/render-us-auth-config.sh" "${US_CHART}" "${US_AUTH_DIR}/hub-ca.crt" > "${US_AUTH_DIR}/authentication-configuration.yaml"
 
 echo "Creating us cluster..."
 kind create cluster --name us --config "${US_CONFIG}"

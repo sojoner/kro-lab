@@ -88,11 +88,11 @@ spec:
           content: |
             echo "=== 3. Verify Dex OIDC still works through new AuthenticationConfiguration ==="
 
-            kubectl port-forward -n monitoring svc/dex 15556:5556 &
+            kubectl port-forward -n monitoring svc/dex 15516:5556 &
             PF_PID=$!
             sleep 3
 
-            DISC=$(curl -sk http://localhost:15556/dex/.well-known/openid-configuration 2>/dev/null || echo "{}")
+            DISC=$(curl -sk http://localhost:15516/dex/.well-known/openid-configuration 2>/dev/null || echo "{}")
             kill $PF_PID 2>/dev/null || true
 
             ISSUER=$(echo "$DISC" | jq -r '.issuer // ""')
@@ -102,7 +102,7 @@ spec:
             fi
             echo "OK: Dex OIDC discovery available: issuer=$ISSUER"
 
-            TOKEN_RESP=$(curl -sk -X POST "http://localhost:15556/dex/token" \
+            TOKEN_RESP=$(curl -sk -X POST "http://localhost:15516/dex/token" \
               -H "Authorization: Basic $(echo -n 'chainsaw-test-client:' | base64)" \
               -d "grant_type=client_credentials&scope=openid" 2>/dev/null || echo "{}")
             ACCESS_TOKEN=$(echo "$TOKEN_RESP" | jq -r '.access_token // ""')

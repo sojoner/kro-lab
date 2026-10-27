@@ -23,10 +23,10 @@ spec:
   - try:
     - script:
         content: |
-          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-grafana 3000:80 &
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-grafana 3012:80 &
           PF_PID=$!
           sleep 5
-          DASHBOARDS=$(curl -s http://admin:admin@localhost:3000/api/search?type=dash-db || echo "[]")
+          DASHBOARDS=$(curl -s http://admin:admin@localhost:3012/api/search?type=dash-db || echo "[]")
           kill $PF_PID 2>/dev/null || true
           for uid in controller-deep-dive cluster-fitness chainsaw-results; do
             if echo "$DASHBOARDS" | grep -q "\"$uid\""; then

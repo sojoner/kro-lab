@@ -29,12 +29,19 @@ spec:
   - try:
     - script:
         content: |
-          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-grafana 3000:80 &
+          # Grafana's dashboard-sidecar provisioning is awaited during
+          # `make deploy` (deploy-wave2), not here — by validate time this
+          # must already be ready, same as every other hub resource.
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-grafana 3015:80 &
           PF_PID=$!
           sleep 5
-          DASHBOARD=$(curl -s http://admin:admin@localhost:3000/api/dashboards/uid/controller-deep-dive 2>/dev/null || echo "{}")
+          DASHBOARD=$(curl -s http://admin:admin@localhost:3015/api/dashboards/uid/controller-deep-dive 2>/dev/null || echo "{}")
           kill $PF_PID 2>/dev/null || true
-          TITLE=$(echo "$DASHBOARD" | python3 -c "import sys,json; print(json.load(sys.stdin).get('dashboard',{}).get('title','NONE'))" 2>/dev/null || echo "NONE")
+          # printf, not echo: this dashboard's panels embed literal "\n" inside
+          # JSON string values (markdown panel content) — /bin/sh's echo
+          # interprets those as real newlines, corrupting the JSON before
+          # python ever sees it. printf %s passes the bytes through untouched.
+          TITLE=$(printf '%s' "$DASHBOARD" | python3 -c "import sys,json; print(json.load(sys.stdin).get('dashboard',{}).get('title','NONE'))" 2>/dev/null || echo "NONE")
           if [ "$TITLE" != "NONE" ]; then
             echo "PASS: dashboard loaded with title '$TITLE'"
           else

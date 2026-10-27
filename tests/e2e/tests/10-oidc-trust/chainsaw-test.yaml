@@ -116,10 +116,10 @@ spec:
     - script:
         timeout: 120s
         content: |
-          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/loki 13100:3100 &
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/loki 13110:3100 &
           PF_PID=$!
           sleep 5
-          HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:13100/ready 2>/dev/null || echo "000")
+          HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:13110/ready 2>/dev/null || echo "000")
           if [ "$HEALTH" != "200" ]; then
             kill $PF_PID 2>/dev/null || true
             echo "Loki not ready, skipping audit log check"
@@ -128,7 +128,7 @@ spec:
           NOW_SEC=$(date +%s)
           ONE_MIN_AGO=$((NOW_SEC - 60))
           QUERY='{app="oidc-verifier"} |= "AUDIT"'
-          RESULT=$(curl -s -G "http://localhost:13100/loki/api/v1/query_range" \
+          RESULT=$(curl -s -G "http://localhost:13110/loki/api/v1/query_range" \
             --data-urlencode "query=$QUERY" \
             --data-urlencode "start=${ONE_MIN_AGO}000000000" \
             --data-urlencode "end=${NOW_SEC}000000000" \

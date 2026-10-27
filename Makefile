@@ -257,7 +257,14 @@ render-kind-us-config:
 # missing file self-heals without a separate manual step. Content comes from
 # chart/us/templates/auth-config.yaml (values.yaml is the single source of
 # truth) via hack/platform-mvp/render-us-auth-config.sh — never
-# hand-duplicate it here.
+# hand-duplicate it here. Requires the hub cluster to already exist: the hub
+# issuer's trust anchor is the hub apiserver's own CA (kind's cert isn't
+# publicly trusted), extracted fresh each run rather than assumed stable.
+# The Dex issuer's CA (the cert-manager self-signed cert backing the ingress,
+# secret monitoring/ingress-tls) usually doesn't exist yet the first time this
+# runs (before Wave 2) — included once it does. The apiserver hot-reloads
+# this file, so a second `make ensure-us-auth-config` after Wave 2 (see
+# `deploy`) picks it up without restarting anything.
 ensure-us-auth-config: render-kind-us-config
 	@mkdir -p "$(US_AUTH_DIR)" 2>/dev/null || { \
 		echo "ERROR: cannot create $(US_AUTH_DIR) (likely root-owned after a host reboot)."; \
@@ -265,23 +272,33 @@ ensure-us-auth-config: render-kind-us-config
 		echo "  ./hack/platform-mvp/render-us-auth-config.sh $(US_CHART) | sudo tee $(US_AUTH_DIR)/authentication-configuration.yaml > /dev/null"; \
 		exit 1; \
 	}
-	@./hack/platform-mvp/render-us-auth-config.sh $(US_CHART) > "$(US_AUTH_DIR)/authentication-configuration.yaml" 2>/dev/null || { \
+	@docker exec $(KIND_HUB)-control-plane cat /etc/kubernetes/pki/ca.crt > "$(US_AUTH_DIR)/hub-ca.crt" || { \
+		echo "ERROR: cannot read hub CA cert — is the hub cluster up? (kind get clusters)"; \
+		exit 1; \
+	}
+	@kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) get secret ingress-tls -o jsonpath='{.data.ca\.crt}' 2>/dev/null | base64 -d > "$(US_AUTH_DIR)/dex-ca.crt" || rm -f "$(US_AUTH_DIR)/dex-ca.crt"
+	@DEX_CA=""; [ -s "$(US_AUTH_DIR)/dex-ca.crt" ] && DEX_CA="$(US_AUTH_DIR)/dex-ca.crt"; \
+	./hack/platform-mvp/render-us-auth-config.sh $(US_CHART) "$(US_AUTH_DIR)/hub-ca.crt" "$$DEX_CA" > "$(US_AUTH_DIR)/authentication-configuration.yaml" 2>/dev/null || { \
 		echo "ERROR: cannot write $(US_AUTH_DIR)/authentication-configuration.yaml (likely root-owned after a host reboot)."; \
 		echo "  Run this once, then retry:"; \
-		echo "  ./hack/platform-mvp/render-us-auth-config.sh $(US_CHART) | sudo tee $(US_AUTH_DIR)/authentication-configuration.yaml > /dev/null"; \
+		echo "  ./hack/platform-mvp/render-us-auth-config.sh $(US_CHART) $(US_AUTH_DIR)/hub-ca.crt | sudo tee $(US_AUTH_DIR)/authentication-configuration.yaml > /dev/null"; \
 		exit 1; \
 	}
 	@echo "  us AuthenticationConfiguration ready at $(US_AUTH_DIR)/authentication-configuration.yaml"
 
-clusters: ensure-us-auth-config
-	@echo "==> Creating kind clusters (parallel)"
+# hub must exist before ensure-us-auth-config (needs its CA cert), and
+# ensure-us-auth-config must finish before the us cluster starts (it reads
+# the host-mounted file at kube-apiserver boot) — no longer parallel.
+clusters:
+	@echo "==> Creating hub cluster"
 	@if ! kind get clusters 2>/dev/null | grep -qx "$(KIND_HUB)"; then \
-		kind create cluster --name $(KIND_HUB) --config $(KIND_HUB_CONFIG) & \
-	fi; \
-	if ! kind get clusters 2>/dev/null | grep -qx "$(KIND_US)"; then \
-		kind create cluster --name $(KIND_US) --config $(KIND_US_CONFIG) & \
-	fi; \
-	wait
+		kind create cluster --name $(KIND_HUB) --config $(KIND_HUB_CONFIG); \
+	fi
+	$(MAKE) ensure-us-auth-config
+	@echo "==> Creating us cluster"
+	@if ! kind get clusters 2>/dev/null | grep -qx "$(KIND_US)"; then \
+		kind create cluster --name $(KIND_US) --config $(KIND_US_CONFIG); \
+	fi
 	@echo "  Verifying nodes..."
 	kubectl --context kind-$(KIND_HUB) get nodes
 	kubectl --context kind-$(KIND_US) get nodes
@@ -322,6 +339,10 @@ deploy: crds
 	wait
 	@echo "==> Wave 2: Infrastructure on hub"
 	$(MAKE) deploy-wave2
+	@echo "  Waiting for ingress-tls cert (Dex CA source) to be issued..."
+	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) wait --for=jsonpath='{.data.ca\.crt}' secret/ingress-tls --timeout=60s
+	@echo "  Refreshing us AuthenticationConfiguration (Dex CA now available)..."
+	$(MAKE) ensure-us-auth-config
 	@echo "==> Wave 3: Hub services on hub"
 	$(MAKE) deploy-wave3
 	@echo "==> Platform deploy complete (Flux not yet installed — run 'make deploy-cd' for GitOps)"
@@ -366,6 +387,12 @@ deploy-wave2:
 		--set ingress.host=$(INGRESS_HOST) --set ingress.enabled=true \
 		-f $(HUB_CHART)/e2e-values.yaml \
 		--kube-context kind-$(KIND_HUB)
+	@echo "  Waiting for Grafana (may have restarted from the ingress upgrade)..."
+	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) rollout status deploy/hub-grafana --timeout=60s
+	@echo "  Waiting for Grafana's dashboard-sidecar to provision ConfigMap dashboards..."
+	@echo "  (sidecar sync lag after a fresh deploy is observed to vary widely — up to ~90s)"
+	kubectl --context kind-$(KIND_HUB) run dashboard-wait --rm -i --restart=Never --image=curlimages/curl -n $(OBS_NS) -- \
+		sh -c 'for i in $$(seq 1 40); do CODE=$$(curl -s -o /dev/null -w "%{http_code}" http://admin:admin@hub-grafana/api/dashboards/uid/controller-deep-dive); [ "$$CODE" = "200" ] && exit 0; sleep 3; done; exit 1'
 	@echo "==> Wave 2 complete"
 
 # ── Wave 3: Hub services (hub context) ────────────────────────────────────────

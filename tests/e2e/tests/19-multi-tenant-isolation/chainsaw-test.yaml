@@ -135,10 +135,10 @@ spec:
           timeout: 30s
           content: |
             # Verify metrics carry correct tenant labels
-            kubectl -n default port-forward svc/binding-controller 18090:8080 &
+            kubectl -n default port-forward svc/binding-controller 18019:8080 &
             PF_PID=$!
             sleep 3
-            METRICS=$(curl -s http://localhost:18090/metrics || echo "")
+            METRICS=$(curl -s http://localhost:18019/metrics || echo "")
             kill $PF_PID 2>/dev/null || true
 
             for T in acme-corp globex-inc; do
