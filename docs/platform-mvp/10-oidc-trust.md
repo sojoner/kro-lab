@@ -141,7 +141,7 @@ authConfiguration:
         prefix: "dex:"
 ```
 
-The `kind-us.yaml` cluster config (generated from `kind-us.yaml.tmpl` by `make render-kind-us-config`) mounts the auth file from `deploy/platform-mvp/kind/us-auth/` — resolved relative to the template, not a hardcoded path — via:
+Each spoke's kind config (generated from `kind-spoke.yaml.tmpl` by `make render-kind-config-<spoke>`) mounts its auth file from `deploy/platform-mvp/kind/<spoke>-auth/` — resolved relative to the template, not a hardcoded path — via:
 - `extraMounts` (kind node → container)
 - `apiServer.extraVolumes` (kubeadm → kube-apiserver pod)
 - `--authentication-config` flag

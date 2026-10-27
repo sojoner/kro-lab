@@ -50,7 +50,7 @@ sequenceDiagram
 ## Verified for `eu`
 
 - Test `23-eu-cluster-ready`: nodes Ready, `ClusterProfile eu` and `eu-kubeconfig` present.
-- By hand: `GlobalWidget{regions:[us,eu]}` for `acme-corp` produced a `Ready` Widget on both spokes, and status listed both regions. An automated test is planned.
+- Test `30-globalwidget-eu`: `GlobalWidget{regions:[us,eu]}` for `acme-corp` produces a `Ready` Widget on both spokes and a per-region status on the hub.
 
 ## Per-region checklist
 

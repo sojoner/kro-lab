@@ -1,6 +1,6 @@
 # Phase 3 — Fleet Registration
 
-Registering the `us` spoke cluster on the hub via `ClusterProfile` CRD and the `cluster-inventory-api` multicluster provider.
+Registering spoke clusters (`us`, `eu`) on the hub via `ClusterProfile` CRD and the `cluster-inventory-api` multicluster provider.
 
 ---
 
@@ -15,7 +15,7 @@ sequenceDiagram
     participant MGR as multicluster.Manager
     participant Secret as us-kubeconfig Secret
 
-    Admin->>Hub: kubectl create secret generic us-kubeconfig<br/>--from-file=kubeconfig=./us-internal.kubeconfig
+    Admin->>Hub: kubectl create secret generic us-kubeconfig<br/>--from-file=value=./us-internal.kubeconfig
     Admin->>Hub: kubectl apply -f ClusterProfile/us
 
     loop every 10s (provider poll)
@@ -73,14 +73,23 @@ This decouples credential rotation from cluster engagement, eliminating the tigh
 
 ## ClusterProfile CRD
 
-Defined in `deploy/platform-mvp/chart/hub-services/templates/fleet.yaml`:
+Rendered from `fleet.clusters` in `chart/hub-services/values.yaml`, one object per spoke. Labels are optional:
 
 ```yaml
 apiVersion: multicluster.x-k8s.io/v1alpha1
 kind: ClusterProfile
 metadata:
-  name: us
+  name: eu
+  namespace: default
+  labels:
+    platform.example.com/offers-vms: "true"
 ```
+
+The kubeconfig Secret is `<name>-kubeconfig` in the same namespace, with the kubeconfig under the key `value`.
+
+### Scoping a controller to some spokes
+
+A controller can engage only the ClusterProfiles whose labels match (`Provider.SetLabelSelector`). The VM binding controller uses `platform.example.com/offers-vms=true`, so it sees `eu` and never `us`. A profile that stops matching is disengaged on the next poll. No selector engages every profile, which is what the widget binding controller does.
 
 The `status` subresource includes:
 
@@ -103,5 +112,5 @@ In production, a control plane health controller would populate `ControlPlaneHea
 | File | Purpose |
 |------|---------|
 | `providers/cluster-inventory-api/provider.go` | Provider: poll loop, engagement, clusterKey change detection (Host+CAData) |
-| `deploy/platform-mvp/chart/hub-services/templates/fleet.yaml` | ClusterProfile/us manifest |
+| `deploy/platform-mvp/chart/hub-services/templates/fleet.yaml` | One ClusterProfile per `fleet.clusters` entry |
 | `platform-mvp/binding-controller/main.go:123-176` | `staticProvider` — dev fallback (single cluster via kubeconfig flag) |

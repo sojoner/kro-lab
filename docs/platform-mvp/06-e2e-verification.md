@@ -1,6 +1,6 @@
 # Phase 6 — E2E Verification
 
-All 20 Chainsaw E2E tests, run via `make validate`. Tests are declarative YAML files under `tests/e2e/tests/`.
+All 28 Chainsaw E2E tests, run via `make validate`. Tests are declarative YAML files under `tests/e2e/tests/`.
 
 ---
 
@@ -10,18 +10,21 @@ All 20 Chainsaw E2E tests, run via `make validate`. Tests are declarative YAML f
 graph TB
     subgraph "Chainsaw Runner"
         CFG[".chainsaw.yaml<br/>multi-cluster config"]
-        TESTS["20 test files<br/>tests/e2e/tests/*/"]
+        TESTS["28 test files<br/>tests/e2e/tests/*/"]
     end
 
     subgraph "Target Clusters"
         HUB["kind-hub<br/>hub kubeconfig"]
         US["kind-us<br/>us kubeconfig"]
+        EU["kind-eu<br/>eu kubeconfig"]
     end
 
     CFG --> HUB
     CFG --> US
+    CFG --> EU
     TESTS -->|"cluster: hub"| HUB
     TESTS -->|"cluster: us"| US
+    TESTS -->|"cluster: eu"| EU
     TESTS -->|"cross-cluster ops"| HUB
     TESTS -->|"cross-cluster ops"| US
 ```
@@ -34,13 +37,15 @@ clusters:
     kubeconfig: ./kubeconfig-hub
   us:
     kubeconfig: ./kubeconfig-us-internal
+  eu:
+    kubeconfig: ./kubeconfig-eu-internal
 ```
 
-Each test specifies its target cluster via `cluster: hub` or `cluster: us`. Cross-cluster tests use script steps to execute `kubectl` on both clusters.
+Each test specifies its target cluster via `cluster: hub`, `cluster: us` or `cluster: eu`. Cross-cluster tests use script steps to execute `kubectl` on both clusters.
 
 ---
 
-## All 20 Tests
+## All 28 Tests
 
 | # | Test | Cluster | What It Validates |
 |---|------|---------|-------------------|
@@ -63,7 +68,15 @@ Each test specifies its target cluster via `cluster: hub` or `cluster: us`. Cros
 | 18 | `admission-guardrails` | us | **v2**: Three ValidatingAdmissionPolicy resources exist and are bound; platform-admin RBAC present
 | 19 | `multi-tenant-isolation` | hub→us | Cross-tenant isolation (acme-corp | globex-inc)
 | 20 | `tenant-rbac-roles` | hub→us | Admin/dev/analyst role enforcement per tenant
-| 21 | `platform-admin-access` | hub | Platform admin bypasses admission policies
+| 21 | `platform-admin-access` | hub | Platform admin bypasses admission policies |
+| 23 | `eu-cluster-ready` | eu, hub | eu nodes Ready; `ClusterProfile eu` carries `offers-vms`; `eu-kubeconfig` Secret present |
+| 24 | `kubevirt-ready` | eu | KubeVirt CR `Deployed`; node `kubevirt.io/schedulable`; hardware virtualization (no emulation) |
+| 25 | `vmset-provisioning` | hub | `VmSet` → cloud-init Secret + `RegionalVmSetRequest` with tier cpu/memory; S default; replicas scale; size immutable; bad size/replicas/key rejected |
+| 26 | `vmset-lifecycle` | hub→eu | VMs and Secret run on eu; status Ready flows back; scale-down removes highest index; delete cleans eu |
+| 27 | `vm-cloudinit` | hub→eu | Cloud-init marker appears in the guest serial log |
+| 28 | `vm-console-rbac` | eu | vm-binding-controller scoped to tenant namespaces; console by role tier via SubjectAccessReview |
+| 29 | `vmset-unschedulable` | hub | Region without KubeVirt → `Unschedulable`; delete not blocked by the finalizer |
+| 30 | `globalwidget-eu` | hub→us,eu | `GlobalWidget{regions:[us,eu]}` → Ready Widget on both spokes; per-region hub status |
 
 ---
 
@@ -91,6 +104,14 @@ graph TD
     R --> S["20: Tenant RBAC Roles"]
     Q --> S
     Q --> T["21: Platform Admin Access"]
+    D --> U["23: EU Ready"]
+    U --> V["24: KubeVirt Ready"]
+    V --> W["25: VmSet Provisioning"]
+    W --> X["26: VmSet Lifecycle"]
+    W --> Y["27: VM Cloud-init"]
+    W --> Z["29: VmSet Unschedulable"]
+    V --> AA["28: VM Console RBAC"]
+    U --> AB["30: GlobalWidget on eu"]
 
     style A fill:#4caf50,color:#fff
     style B fill:#4caf50,color:#fff
@@ -112,6 +133,14 @@ graph TD
     style R fill:#4caf50,color:#fff
     style S fill:#4caf50,color:#fff
     style T fill:#4caf50,color:#fff
+    style U fill:#4caf50,color:#fff
+    style V fill:#4caf50,color:#fff
+    style W fill:#4caf50,color:#fff
+    style X fill:#4caf50,color:#fff
+    style Y fill:#4caf50,color:#fff
+    style Z fill:#4caf50,color:#fff
+    style AA fill:#4caf50,color:#fff
+    style AB fill:#4caf50,color:#fff
 ```
 
 Tests are ordered to form a dependency chain: earlier tests deploy resources that later tests depend on.
@@ -121,18 +150,18 @@ Tests are ordered to form a dependency chain: earlier tests deploy resources tha
 ## Running Tests
 
 ```bash
-# Full suite (all 20 tests)
+# Full suite (all 28 tests)
 make validate
 
 # Or directly:
 cd tests/e2e
 chainsaw test . --test-dir tests
 
-# Single test
-chainsaw test . --test-dir tests/10-oidc-trust
+# Single test (--config is needed when running from this directory)
+chainsaw test --config .chainsaw.yaml tests/10-oidc-trust
 
-# Subset (admission + tenant isolation)
-chainsaw test . --test-dir tests/18-admission-guardrails --test-dir tests/19-multi-tenant-isolation --test-dir tests/20-tenant-rbac-roles --test-dir tests/21-platform-admin-access
+# Subset: pass several test directories
+chainsaw test --config .chainsaw.yaml tests/18-admission-guardrails tests/19-multi-tenant-isolation tests/20-tenant-rbac-roles tests/21-platform-admin-access
 ```
 
 ## In-Cluster Continuous Testing
@@ -189,4 +218,5 @@ sequenceDiagram
 | `tests/e2e/tests/18-admission-guardrails/` | ValidatingAdmissionPolicy enforcement (v2)
 | `tests/e2e/tests/19-multi-tenant-isolation/` | Cross-tenant isolation test (acme-corp \| globex-inc)
 | `tests/e2e/tests/20-tenant-rbac-roles/` | Admin/dev/analyst role enforcement per tenant
-| `tests/e2e/tests/21-platform-admin-access/` | Platform admin bypasses admission policies | |
+| `tests/e2e/tests/21-platform-admin-access/` | Platform admin bypasses admission policies |
+| `tests/e2e/tests/23-eu-cluster-ready/` … `30-globalwidget-eu/` | eu spoke, KubeVirt, VmSet service, VM RBAC, eu widget fan-out |

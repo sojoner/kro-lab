@@ -2,7 +2,7 @@
 
 Capabilities are in [Capabilities & Use Cases](15-capabilities.md). This page shows how each role uses them.
 
-✅ built and tested · 🚧 in progress (`feat/kubevirt-vmset`)
+✅ built and tested
 
 ## Stories
 
@@ -16,8 +16,8 @@ Capabilities are in [Capabilities & Use Cases](15-capabilities.md). This page sh
 | S6 | Tenant developer | create and update workloads but not delete them | I ship safely | ✅ |
 | S7 | Tenant analyst | read workloads and status only | I can report without risk | ✅ |
 | S8 | Tenant | be unable to see or touch another tenant | my data stays mine | ✅ |
-| S9 | Tenant admin | order a set of 1–3 small VMs, size S or M | I get a cheap Linux machine to try things on | 🚧 |
-| S10 | Tenant developer | open a console on my VM | I can log in without any network exposure | 🚧 |
+| S9 | Tenant admin | order a set of 1–3 small VMs, size S or M | I get a cheap Linux machine to try things on | ✅ |
+| S10 | Tenant developer | open a console on my VM | I can log in without any network exposure | ✅ (RBAC tested; see note) |
 
 ## S1 · Onboard a tenant
 
@@ -120,9 +120,9 @@ flowchart LR
     L --> G
 ```
 
-## S9–S10 · Order VMs 🚧
+## S9–S10 · Order VMs
 
-Planned, not built yet. KubeVirt v1.9.1 already runs on the `eu` spoke (test 24); the `VmSet` hub API exists (test 25) but its controller does not, so no VM is created yet.
+The operator creates the `VmSet` for the tenant, like a `GlobalWidget` (tenants have no hub identity). Scaling and deleting work too: replicas scale down highest index first, and deleting the `VmSet` removes its VMs and Secret from `eu`. Tests 24–29.
 
 ```mermaid
 sequenceDiagram
@@ -145,3 +145,5 @@ sequenceDiagram
 |------|-----:|-------:|
 | S | 1 | 1 GiB |
 | M | 2 | 2 GiB |
+
+Console access is enforced by RBAC (admin and developer yes, analyst and other tenants no; test 28). An interactive `virtctl console` session itself is not part of the automated suite.

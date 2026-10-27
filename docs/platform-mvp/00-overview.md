@@ -149,6 +149,9 @@ See [Phase 9 — Multi-Tenancy](09-multi-tenancy.md) for full details including 
 | **Event Exporter** | hub | `chart/infrastructure/templates/event-exporter.yaml` | Routes Kubernetes events to Loki with structured labels |
 | **Chainsaw CronJob** | hub | `chart/infrastructure/templates/chainsaw-cronjob.yaml` | Runs E2E test suite every 2m against both clusters; pushes results to Loki |
 | **Widget Operator** | spoke | `platform-mvp/widget-operator/` | Reconciles Widget CR: Pending → Ready (2s delay) |
+| **VmSet RGD** | hub | `chart/hub-services/templates/vmset-rgd.yaml` | Expands `VmSet` into a cloud-init Secret + one `RegionalVmSetRequest` per region; maps tier S/M to cpu/memory |
+| **VM Binding Controller** | hub | `platform-mvp/vm-binding-controller/` | Engages only `offers-vms` spokes; turns each request into KubeVirt VMs + Secret, reports readiness back; finalizer cleans the spoke |
+| **KubeVirt** | spoke `eu` | `crds/kubevirt-operator.yaml`, `chart/spoke/templates/kubevirt.yaml` | Runs the VMs on hardware virtualization (KVM) |
 | **OIDC Verifier** | spoke | `platform-mvp/oidc-verifier/` | Polls Dex JWKS every 5m; validates Bearer tokens via `/verify`; emits structured AUDIT logs |
 | **AuthenticationConfiguration** | spoke | `chart/spoke/templates/auth-config.yaml` | Spoke kube-apiserver auth config: hub issuer (controllers) + Dex issuer (humans) |
 | **ValidatingAdmissionPolicy** | spoke | `chart/spoke/templates/admission-guardrails.yaml` | Platform Wins guardrails: restrict ClusterRole mgmt, protect system ns, protect auth config |
@@ -167,7 +170,7 @@ make deploy-cd
 # Build + deploy in-cluster Chainsaw test runner
 make chainsaw-runner
 
-# Run full E2E validation (23 tests)
+# Run full E2E validation (28 tests)
 make validate
 
 # Tear everything down
