@@ -1,7 +1,5 @@
-# E2E test overrides for hub-services — internal Dex URL
-dex:
-  issuer: "http://dex.monitoring.svc.cluster.local:5556/dex"
-
-bindingController:
-  dex:
-    enabled: true
+# Test-only tier: small enough for the e2e suite to hit both quotas quickly.
+# Not part of the default offering (values.yaml).
+bucket:
+  tiers:
+    T: { maxSize: 1Mi, maxObjects: 3 }

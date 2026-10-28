@@ -23,3 +23,5 @@ spec:
       kubeconfig: ./kubeconfig-us-internal
     eu:
       kubeconfig: ./kubeconfig-eu-internal
+    eu-storage:
+      kubeconfig: ./kubeconfig-eu-storage-internal

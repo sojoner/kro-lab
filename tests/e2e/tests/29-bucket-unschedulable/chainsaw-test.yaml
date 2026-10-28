@@ -1,0 +1,59 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: bucket-unschedulable
+spec:
+  cluster: hub
+  description: >
+    A region without object storage (us has no Ceph) is reported
+    Unschedulable instead of failing, creates no claim anywhere, and deleting
+    such a Bucket is not blocked by its finalizer.
+  steps:
+  - name: order a bucket in a region without object storage
+    try:
+    - apply:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: Bucket
+          metadata:
+            name: nowhere
+            labels:
+              platform.example.com/tenant: acme-corp
+          spec:
+            regions: [us]
+            size: S
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: nowhere-us
+          status:
+            regions:
+            - region: us
+              phase: Unschedulable
+  - name: no claim exists on any spoke
+    cluster: eu-storage
+    try:
+    - error:
+        resource:
+          apiVersion: objectbucket.io/v1alpha1
+          kind: ObjectBucketClaim
+          metadata:
+            name: nowhere-us
+            namespace: acme-corp
+  - name: delete is not blocked
+    try:
+    - delete:
+        ref:
+          apiVersion: platform.example.com/v1alpha1
+          kind: Bucket
+          name: nowhere
+    - error:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: nowhere-us

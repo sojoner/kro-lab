@@ -1,0 +1,64 @@
+{{- if .Values.bucketBindingControllerRBAC.enabled }}
+# The hub's bucket-binding-controller authenticates here with a projected SA
+# token (see auth-config.yaml). It may watch claims everywhere (the informer is
+# cluster-wide) but write claims and read their endpoint only in tenant
+# namespaces. It cannot read credentials.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hub-bucket-binding-controller
+  labels:
+    app.kubernetes.io/part-of: platform-mvp
+    security.platform.example.com/identity: hub-service
+rules:
+  - apiGroups: ["objectbucket.io"]
+    resources: ["objectbucketclaims"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hub-bucket-binding-controller
+  labels:
+    app.kubernetes.io/part-of: platform-mvp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hub-bucket-binding-controller
+subjects:
+  - kind: User
+    name: {{ .Values.bucketBindingControllerRBAC.hubIdentity }}
+    apiGroup: rbac.authorization.k8s.io
+{{- $namespaces := list }}
+{{- range .Values.tenants }}{{- $namespaces = append $namespaces .id }}{{- end }}
+{{- $namespaces = concat $namespaces .Values.bucketBindingControllerRBAC.extraNamespaces }}
+{{- range $namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hub-bucket-binding-controller
+  namespace: {{ . }}
+rules:
+  - apiGroups: ["objectbucket.io"]
+    resources: ["objectbucketclaims"]
+    verbs: ["create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hub-bucket-binding-controller
+  namespace: {{ . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hub-bucket-binding-controller
+subjects:
+  - kind: User
+    name: {{ $.Values.bucketBindingControllerRBAC.hubIdentity }}
+    apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end }}

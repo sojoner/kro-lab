@@ -14,18 +14,24 @@ metadata:
   name: {{ .id }}-admin
   namespace: {{ .id }}
 rules:
-- apiGroups: ["platform.example.com"]
-  resources: ["widgets"]
-  verbs: ["*"]
-- apiGroups: ["platform.example.com"]
-  resources: ["widgets/status"]
-  verbs: ["*"]
 {{- if $.Values.kubevirt.enabled }}
 - apiGroups: ["kubevirt.io"]
   resources: ["virtualmachines", "virtualmachineinstances"]
   verbs: ["get", "list", "watch"]
 - apiGroups: ["subresources.kubevirt.io"]
   resources: ["virtualmachineinstances/console"]
+  verbs: ["get"]
+{{- end }}
+{{- if $.Values.objectStorage.enabled }}
+- apiGroups: ["objectbucket.io"]
+  resources: ["objectbucketclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+# The claim's Secret holds the S3 credentials: fetched by name, never listed.
+- apiGroups: [""]
+  resources: ["secrets"]
   verbs: ["get"]
 {{- end }}
 ---
@@ -35,18 +41,24 @@ metadata:
   name: {{ .id }}-developer
   namespace: {{ .id }}
 rules:
-- apiGroups: ["platform.example.com"]
-  resources: ["widgets"]
-  verbs: ["get", "list", "watch", "create", "update", "patch"]
-- apiGroups: ["platform.example.com"]
-  resources: ["widgets/status"]
-  verbs: ["get"]
 {{- if $.Values.kubevirt.enabled }}
 - apiGroups: ["kubevirt.io"]
   resources: ["virtualmachines", "virtualmachineinstances"]
   verbs: ["get", "list", "watch"]
 - apiGroups: ["subresources.kubevirt.io"]
   resources: ["virtualmachineinstances/console"]
+  verbs: ["get"]
+{{- end }}
+{{- if $.Values.objectStorage.enabled }}
+- apiGroups: ["objectbucket.io"]
+  resources: ["objectbucketclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+# The claim's Secret holds the S3 credentials: fetched by name, never listed.
+- apiGroups: [""]
+  resources: ["secrets"]
   verbs: ["get"]
 {{- end }}
 ---
@@ -56,15 +68,17 @@ metadata:
   name: {{ .id }}-analyst
   namespace: {{ .id }}
 rules:
-- apiGroups: ["platform.example.com"]
-  resources: ["widgets"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: ["platform.example.com"]
-  resources: ["widgets/status"]
-  verbs: ["get"]
 {{- if $.Values.kubevirt.enabled }}
 - apiGroups: ["kubevirt.io"]
   resources: ["virtualmachines", "virtualmachineinstances"]
+  verbs: ["get", "list", "watch"]
+{{- end }}
+{{- if $.Values.objectStorage.enabled }}
+- apiGroups: ["objectbucket.io"]
+  resources: ["objectbucketclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
   verbs: ["get", "list", "watch"]
 {{- end }}
 ---

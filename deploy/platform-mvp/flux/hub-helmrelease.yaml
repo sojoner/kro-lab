@@ -68,9 +68,3 @@ spec:
         name: platform
         namespace: flux-system
       interval: 1m
-  values:
-    dex:
-      issuer: "http://dex.monitoring.svc.cluster.local:5556/dex"
-    bindingController:
-      dex:
-        enabled: true

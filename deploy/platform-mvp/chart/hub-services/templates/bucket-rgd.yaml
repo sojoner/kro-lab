@@ -1,0 +1,31 @@
+{{- $tiers := .Values.bucket.tiers | toJson }}
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: bucket.platform.example.com
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: Bucket
+    group: platform.example.com
+    spec:
+      regions: '[]string | minItems=1 description="Regions to provision the bucket in (must offer object storage)"'
+      size: 'string | default="{{ .Values.bucket.defaultSize }}" enum="{{ keys .Values.bucket.tiers | sortAlpha | join "," }}" immutable=true description="Bucket tier (quota)"'
+    status:
+      regions: ${regionalBucketRequest.map(r, r.status)}
+  resources:
+    - id: regionalBucketRequest
+      template:
+        apiVersion: platform.example.com/v1alpha1
+        kind: RegionalBucketRequest
+        metadata:
+          name: "${schema.metadata.name}-${region}"
+          labels:
+            platform.example.com/tenant: '${schema.metadata.labels["platform.example.com/tenant"]}'
+            platform.example.com/bucket: "${schema.metadata.name}"
+        spec:
+          region: "${region}"
+          maxSize: ${ {{ $tiers }}[schema.spec.size].maxSize }
+          maxObjects: ${ {{ $tiers }}[schema.spec.size].maxObjects }
+      forEach:
+        - region: "${schema.spec.regions}"

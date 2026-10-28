@@ -1,0 +1,52 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: tenant-namespace-isolation
+spec:
+  cluster: hub
+  description: >
+    Phase 13 — A tenant's Bucket becomes a claim in that tenant's namespace on
+    eu-storage, and the controller's metrics carry the real tenant_id.
+  steps:
+  - name: order a bucket for acme-corp
+    cluster: hub
+    try:
+    - apply:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: Bucket
+          metadata:
+            name: tenant-ns
+            labels:
+              platform.example.com/tenant: acme-corp
+          spec:
+            regions: [eu]
+            size: S
+  - name: the claim lands in the tenant namespace and is bound
+    cluster: eu-storage
+    try:
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: objectbucket.io/v1alpha1
+          kind: ObjectBucketClaim
+          metadata:
+            name: tenant-ns-eu
+            namespace: acme-corp
+            labels:
+              platform.example.com/tenant: acme-corp
+          status:
+            phase: Bound
+  - name: metrics carry tenant_id
+    cluster: hub
+    try:
+    - script:
+        timeout: 30s
+        content: |
+          METRICS=$(kubectl get --raw "/api/v1/namespaces/default/services/bucket-binding-controller:metrics/proxy/metrics")
+          if echo "$METRICS" | grep -q 'bucket_binding_controller_reconcile_total{.*tenant_id="acme-corp"'; then
+            echo "PASS: bucket_binding_controller_reconcile_total has tenant_id=acme-corp"
+          else
+            echo "FAIL: bucket_binding_controller_reconcile_total missing tenant_id=acme-corp"
+            exit 1
+          fi

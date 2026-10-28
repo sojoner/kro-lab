@@ -1,0 +1,111 @@
+{{- if .Values.bucketBindingController.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bucket-binding-controller
+  namespace: default
+---
+# Secrets are read by name only (the ClusterProfile kubeconfigs), never listed
+# or watched.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: bucket-binding-controller
+rules:
+  - apiGroups: ["platform.example.com"]
+    resources: ["regionalbucketrequests"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["platform.example.com"]
+    resources: ["regionalbucketrequests/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["platform.example.com"]
+    resources: ["regionalbucketrequests/finalizers"]
+    verbs: ["update"]
+  - apiGroups: ["multicluster.x-k8s.io"]
+    resources: ["clusterprofiles"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: bucket-binding-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: bucket-binding-controller
+subjects:
+  - kind: ServiceAccount
+    name: bucket-binding-controller
+    namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bucket-binding-controller
+  namespace: default
+  labels:
+    app: bucket-binding-controller
+spec:
+  replicas: {{ .Values.bucketBindingController.replicas }}
+  selector:
+    matchLabels:
+      app: bucket-binding-controller
+  template:
+    metadata:
+      labels:
+        app: bucket-binding-controller
+    spec:
+      serviceAccountName: bucket-binding-controller
+      volumes:
+        - name: spoke-tokens
+          projected:
+            sources:
+{{ toYaml .Values.bucketBindingController.spokeTokens | indent 14 }}
+      containers:
+        - name: bucket-binding-controller
+          image: "{{ .Values.bucketBindingController.image.repository }}:{{ .Values.bucketBindingController.image.tag }}"
+          imagePullPolicy: {{ .Values.bucketBindingController.image.pullPolicy }}
+          args:
+            - --cluster-selector={{ .Values.bucketBindingController.clusterSelector }}
+            - --region-label={{ .Values.bucketBindingController.regionLabel }}
+            - --storage-class={{ .Values.bucketBindingController.storageClass }}
+            - --requeue-interval={{ .Values.bucketBindingController.requeueInterval }}
+            - --cleanup-interval={{ .Values.bucketBindingController.cleanupInterval }}
+            - --poll-interval={{ .Values.bucketBindingController.pollInterval }}
+            - --default-namespace={{ .Values.bucketBindingController.defaultNamespace }}
+            - --metrics-bind-address=:{{ .Values.bucketBindingController.metricsPort }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.bucketBindingController.metricsPort }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: {{ .Values.bucketBindingController.runAsUser }}
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: spoke-tokens
+              mountPath: /var/run/secrets/tokens
+              readOnly: true
+          resources:
+            {{- toYaml .Values.bucketBindingController.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bucket-binding-controller
+  namespace: default
+  labels:
+    app: bucket-binding-controller
+spec:
+  selector:
+    app: bucket-binding-controller
+  ports:
+    - name: metrics
+      port: {{ .Values.bucketBindingController.metricsPort }}
+      targetPort: metrics
+{{- end }}

@@ -21,7 +21,7 @@
       },
       "targets": [
         {
-          "expr": "{namespace=\"default\"} |~ \"(?i)(regionalwidgetrequest|reconcil|spoke|created|error|widget)\"",
+          "expr": "{namespace=\"default\"} |~ \"(?i)(regionalbucketrequest|reconcil|spoke|created|error|bucket)\"",
           "refId": "A"
         }
       ],
@@ -48,7 +48,7 @@
       },
       "targets": [
         {
-          "expr": "{job=\"kubernetes-events\"} |~ \"(?i)(widget|kro|regional|binding)\"",
+          "expr": "{job=\"kubernetes-events\"} |~ \"(?i)(bucket|kro|regional|binding)\"",
           "refId": "A"
         }
       ],
@@ -75,7 +75,7 @@
       },
       "targets": [
         {
-          "expr": "rate(controller_runtime_reconcile_total{controller=\"regionalwidgetrequest\"}[2m])",
+          "expr": "rate(controller_runtime_reconcile_total{controller=\"regionalbucketrequest\"}[2m])",
           "refId": "A",
           "legendFormat": "{{result}}"
         }
@@ -107,7 +107,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"regionalwidgetrequest\"}[2m])) by (le)",
+          "expr": "sum(rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"regionalbucketrequest\"}[2m])) by (le)",
           "refId": "A",
           "format": "heatmap"
         }
@@ -133,7 +133,7 @@
         "h": 6
       },
       "options": {
-        "content": "## Multi-Cluster Auth Flow\n\n```\nHub (kind-hub)                         Spoke (kind-us)\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500                      \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nKro RGD expands\n    \u2193\nRegionalWidgetRequest\n    \u2193 (watched by controller)\nController.Reconcile()\n    \u2502\n    \u251c\u25001. Read spec.region = \"us\"\n    \u2502\n    \u251c\u25002. Provider.Get(ctx, \"us\")\n    \u2502   \u2514\u2500 ClusterProfile/us lookup\n    \u2502   \u2514\u2500 Kubeconfig Secret read\n    \u2502   \u2514\u2500 rest.Config built\n    \u2502   \u2514\u2500 spokeClient created\n    \u2502\n    \u251c\u25003. ensureWidget() \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2192 Widget created on spoke\n    \u2502\n    \u2514\u25004. Widget operator reconciles\n                                           \u2193\n                                    Widget.status updated on spoke\n\nAuth: Kubeconfig (X.509 client cert)\n      stored in Secret, referenced by ClusterProfile\n      No OIDC \u2014 service-to-service, not user-facing\n```",
+        "content": "## Multi-Cluster Flow\n\n```\nHub (kind-hub)                         Spoke (kind-eu-storage)\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500                      \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nKro RGD expands Bucket\n    \u2193\nRegionalBucketRequest\n    \u2193 (watched by controller)\nController.Reconcile()\n    \u2502\n    \u251c\u25001. Read spec.region = \"eu\"\n    \u2502\n    \u251c\u25002. Region \u2192 cluster: ClusterProfile with\n    \u2502   label region=eu and offers-object-storage\n    \u2502   \u2192 eu-storage (engaged by the provider)\n    \u2502\n    \u251c\u25003. ObjectBucketClaim \u2500\u2500\u2500\u2500\u2500\u2192 claim created in the\n    \u2502                                tenant namespace\n    \u2514\u25004. Rook provisions the bucket in Ceph RGW\n                                           \u2193\n                              Claim Bound, endpoint ConfigMap written\n                              \u2192 status.regions updated on the hub\n\nAuth: hub-issued projected ServiceAccount token\n      (audience per spoke), validated by the spoke\n      kube-apiserver through AuthenticationConfiguration\n```",
         "mode": "markdown"
       },
       "datasource": {
@@ -153,7 +153,7 @@
       },
       "targets": [
         {
-          "expr": "controller_runtime_active_workers{controller=\"regionalwidgetrequest\"}",
+          "expr": "controller_runtime_active_workers{controller=\"regionalbucketrequest\"}",
           "refId": "A"
         }
       ],
@@ -190,7 +190,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(controller_runtime_reconcile_total{controller=\"regionalwidgetrequest\",result=\"success\"}[2m])) / sum(rate(controller_runtime_reconcile_total{controller=\"regionalwidgetrequest\"}[2m]))",
+          "expr": "sum(rate(controller_runtime_reconcile_total{controller=\"regionalbucketrequest\",result=\"success\"}[2m])) / sum(rate(controller_runtime_reconcile_total{controller=\"regionalbucketrequest\"}[2m]))",
           "refId": "A"
         }
       ],
@@ -266,7 +266,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(binding_controller_reconcile_total[2m])) by (tenant_id)",
+          "expr": "sum(rate(bucket_binding_controller_reconcile_total[2m])) by (tenant_id)",
           "refId": "A",
           "legendFormat": "{{tenant_id}}"
         }
@@ -288,7 +288,7 @@
     },
     {
       "id": 12,
-      "title": "Widgets by Namespace (Tenancy Separation)",
+      "title": "Buckets by Namespace (Tenancy Separation)",
       "type": "logs",
       "gridPos": {
         "x": 8,
@@ -298,7 +298,7 @@
       },
       "targets": [
         {
-          "expr": "{namespace=~\"default|acme-corp|startup-x\"} |= \"Widget\"",
+          "expr": "{namespace=~\"default|acme-corp|startup-x\"} |= \"bucket\"",
           "refId": "A"
         }
       ],

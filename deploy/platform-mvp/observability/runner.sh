@@ -2,35 +2,32 @@
 set -euo pipefail
 
 BUNDLED_DIR="${BUNDLED_DIR:-/tests-bundled}"
-CONFIGMAP_DIR="${CONFIGMAP_DIR:-/tests}"
+# Space-separated test directory names to run, taken from the bundle (cronjob.tests).
+CHAINSAW_TESTS="${CHAINSAW_TESTS:-}"
 LOKI_URL="${LOKI_URL:-http://loki.monitoring:3100}"
 KUBECONFIG_HUB="${KUBECONFIG_HUB:-/kubeconfig/hub}"
 KUBECONFIG_US="${KUBECONFIG_US:-/kubeconfig/us}"
 
 echo "==> Starting chainsaw test run at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+if [ -z "${CHAINSAW_TESTS}" ]; then
+    echo "ERROR: CHAINSAW_TESTS is empty; set cronjob.tests in the infrastructure chart"
+    exit 1
+fi
+
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 mkdir -p "${WORKDIR}/tests"
 
-# Prefer bundled tests (image), fallback to ConfigMap
-if [ -d "${BUNDLED_DIR}" ] && [ "$(ls -A "${BUNDLED_DIR}" 2>/dev/null)" ]; then
-    echo "==> Using bundled tests from ${BUNDLED_DIR}"
-    cp -r "${BUNDLED_DIR}"/* "${WORKDIR}/tests/"
-elif [ -d "${CONFIGMAP_DIR}" ]; then
-    echo "==> Using ConfigMap tests from ${CONFIGMAP_DIR}"
-    for f in "${CONFIGMAP_DIR}"/*.yaml; do
-        [ -f "$f" ] || continue
-        base=$(basename "$f")
-        name="${base%.yaml}"
-        case "$name" in .chainsaw) continue ;; esac
-        mkdir -p "${WORKDIR}/tests/${name}"
-        sed -e '/^[[:space:]]*count:/d' "$f" > "${WORKDIR}/tests/${name}/chainsaw-test.yaml"
-    done
-else
-    echo "ERROR: no test files found"
-    exit 1
-fi
+# Only tests that need nothing beyond the hub and us run in-cluster; the full suite is `make validate`.
+for t in ${CHAINSAW_TESTS}; do
+    if [ ! -d "${BUNDLED_DIR}/${t}" ]; then
+        echo "ERROR: test ${t} is not in the image (${BUNDLED_DIR})"
+        exit 1
+    fi
+    cp -r "${BUNDLED_DIR}/${t}" "${WORKDIR}/tests/${t}"
+done
+echo "==> Running: ${CHAINSAW_TESTS}"
 
 cp "${KUBECONFIG_HUB}" "${WORKDIR}/kubeconfig-hub"
 cp "${KUBECONFIG_US}"  "${WORKDIR}/kubeconfig-us-internal"

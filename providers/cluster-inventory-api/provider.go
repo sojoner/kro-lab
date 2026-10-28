@@ -47,7 +47,7 @@ type indexRegistration struct {
 // each one it finds.
 //
 // In v2, cluster authentication uses projected ServiceAccount tokens
-// (BearerTokenFile) mounted from the binding-controller pod instead of
+// (BearerTokenFile) mounted from the controller pod instead of
 // static tokens from the kubeconfig Secret. The kubeconfig Secret is still
 // read for server address and CA certificate, but the auth section is
 // overridden with the projected token file path.
@@ -283,7 +283,7 @@ func (p *Provider) readClusterKey(ctx context.Context, cp *unstructured.Unstruct
 // ClusterProfile. It reads the kubeconfig Secret to extract server address
 // and CA certificate, then overrides the auth mechanism with a projected
 // ServiceAccount token file (BearerTokenFile) sourced from the
-// binding-controller pod's projected volume.
+// controller pod's projected volume.
 func (p *Provider) clusterFromClusterProfile(ctx context.Context, cp *unstructured.Unstructured) (cluster.Cluster, error) {
 	secretName := cp.GetName() + KubeconfigSecretSuffix
 	secretNamespace := cp.GetNamespace()

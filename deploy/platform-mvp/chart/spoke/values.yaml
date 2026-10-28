@@ -1,21 +1,11 @@
-widgetOperator:
-  enabled: true
-  replicas: 1
-  readyDelay: 2s
-  image:
-    repository: sojoner/widget-operator
-    tag: dev
-    pullPolicy: Always
-  resources:
-    requests: { cpu: 20m, memory: 32Mi }
-    limits: { cpu: 200m, memory: 128Mi }
-
 authConfiguration:
   enabled: true
   hubIssuer:
     enabled: true
     url: "https://hub-control-plane:6443"
-    audience: "homelab:us-spoke"
+    # Required, set per spoke in values-<name>.yaml: it must equal the audience
+    # of the <name>-token projected into the hub controllers that engage the spoke.
+    audience: ""
     claimValidationRules:
       - expression: 'claims.sub.startsWith("system:serviceaccount:default:")'
         message: "Only ServiceAccounts from the default namespace on the hub may authenticate."
@@ -58,7 +48,7 @@ oidcVerifier:
   image:
     repository: sojoner/oidc-verifier
     tag: dev
-    pullPolicy: Always
+    pullPolicy: IfNotPresent
   resources:
     requests: { cpu: 10m, memory: 16Mi }
     limits: { cpu: 50m, memory: 64Mi }
@@ -69,10 +59,6 @@ admissionPolicies:
     - kind: Group
       name: dex:platform-admin
   additionalProtectedNamespaces: []
-
-bindingControllerRBAC:
-  enabled: true
-  hubIdentity: "hub:system:serviceaccount:default:binding-controller"
 
 tenants:
   - id: acme-corp
@@ -92,4 +78,17 @@ kubevirt:
 vmBindingControllerRBAC:
   enabled: false
   hubIdentity: "hub:system:serviceaccount:default:vm-binding-controller"
+  extraNamespaces: [default]
+
+# Object storage (S3 buckets served by Rook/Ceph RGW, installed by
+# `make deploy-rook-<spoke>`). Enabled per spoke in values-<name>.yaml; it adds
+# the claim/credential read rights to the tenant roles.
+objectStorage:
+  enabled: false
+
+# RBAC for the hub's bucket-binding-controller on object-storage spokes.
+# Namespaces beyond the tenants (e.g. the fallback namespace) go in extraNamespaces.
+bucketBindingControllerRBAC:
+  enabled: false
+  hubIdentity: "hub:system:serviceaccount:default:bucket-binding-controller"
   extraNamespaces: [default]

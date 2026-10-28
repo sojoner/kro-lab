@@ -17,26 +17,10 @@ dex:
   resources:
     requests: { cpu: 20m, memory: 64Mi }
     limits: { cpu: 100m, memory: 128Mi }
-  # infrastructureClients: Dex clients for service identities. Still used by
-  # bindingController's dex-auth-plugin sidecar (chart/hub-services) — do not
-  # remove even though token-rotator (the original consumer) is gone.
-  infrastructureClients:
-    - id: us-spoke-controller
-      name: US Spoke Controller (Infrastructure)
-      secret: us-spoke-controller-secret-demo
-    - id: eu-spoke-controller
-      name: EU Spoke Controller (Infrastructure)
-      secret: eu-spoke-controller-secret-demo
-    - id: asia-spoke-controller
-      name: Asia Spoke Controller (Infrastructure)
-      secret: asia-spoke-controller-secret-demo
-  tenantClients:
-    - id: acme-corp-us-controller
-      name: ACME Corp US Controller
-      secret: acme-corp-us-secret-demo
-    - id: globex-inc-us-controller
-      name: Globex Inc US Controller
-      secret: globex-inc-us-secret-demo
+  # infrastructureClients: Dex clients for service identities (client_credentials).
+  infrastructureClients: []
+  # tenantClients: same shape as infrastructureClients, one per tenant workload.
+  tenantClients: []
   connectors: []
   # Example multi-IDP connectors:
   # connectors:
@@ -58,6 +42,23 @@ dex:
 
 cronjob:
   schedule: "*/2 * * * *"
+  # Test directories (tests/e2e/tests/<name>) the in-cluster runner executes. Only tests
+  # that need nothing beyond the hub and us belong here; the full suite is `make validate`.
+  # Every name must exist: `make check-runner-tests` (part of `make lint`) enforces it.
+  tests:
+    - 01-hub-cluster-ready
+    - 02-us-cluster-ready
+    - 03-fleet-registration
+    - 04-observability-stack
+    - 05-chainsaw-cronjob
+    - 06-ingress-log-shipping
+    - 07-oidc-trust
+    - 08-rotating-trust
+    - 09-dashboard-metrics
+    - 12-auth-configuration
+    - 13-projected-sa-tokens
+    - 14-admission-guardrails
+    - 16-platform-admin-access
 
 kube-prometheus-stack:
   enabled: true

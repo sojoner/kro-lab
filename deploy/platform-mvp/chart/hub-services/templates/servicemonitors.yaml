@@ -1,17 +1,19 @@
+{{- if .Values.bucketBindingController.enabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: binding-controller
+  name: bucket-binding-controller
   namespace: monitoring
   labels:
     release: kps
 spec:
   selector:
     matchLabels:
-      app: binding-controller
+      app: bucket-binding-controller
   endpoints:
     - port: metrics
       interval: 15s
   namespaceSelector:
     matchNames:
       - default
+{{- end }}

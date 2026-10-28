@@ -24,9 +24,9 @@ data:
         - id_token
       passwordConnector: mock
     staticClients:
-      - id: widget-controller
-        name: Widget Controller (Workload Identity)
-        secret: widget-controller-secret-demo
+      - id: demo-workload
+        name: Demo Workload (Workload Identity)
+        secret: demo-workload-secret-demo
         redirectURIs:
           - http://localhost:18000/callback
         grantTypes:

@@ -1,0 +1,37 @@
+# rook-ceph-cluster chart: single-node lab Ceph serving S3 only.
+# The OSD device is injected by `make deploy-rook-<spoke>`
+# (cephClusterSpec.storage.devices[0].name) because the loop number is
+# allocated at runtime.
+operatorNamespace: rook-ceph
+toolbox:
+  enabled: false
+cephClusterSpec:
+  dashboard: { enabled: false }
+  mon: { count: 1, allowMultiplePerNode: true }
+  mgr:
+    count: 1
+    allowMultiplePerNode: true
+    modules: [{ name: rook, enabled: true }]
+  crashCollector: { disable: true }
+  storage:
+    useAllNodes: true
+    useAllDevices: false
+  disruptionManagement: { managePodBudgets: false }
+cephBlockPools: []
+cephFileSystems: []
+cephObjectStores:
+  - name: s3
+    spec:
+      metadataPool:
+        failureDomain: osd
+        replicated: { size: 1, requireSafeReplicaSize: false }
+      dataPool:
+        failureDomain: osd
+        replicated: { size: 1, requireSafeReplicaSize: false }
+      preservePoolsOnDelete: false
+      gateway: { port: 80, instances: 1 }
+    storageClass:
+      enabled: true
+      name: ceph-bucket
+      reclaimPolicy: Delete
+      volumeBindingMode: Immediate

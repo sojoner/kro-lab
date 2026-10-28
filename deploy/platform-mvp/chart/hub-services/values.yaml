@@ -1,10 +1,6 @@
 # Hub Services — controllers that depend on infrastructure (Dex, cert-manager)
 # Release name: hub-services (or whatever you choose)
 
-dex:
-  # Dex issuer URL — must match the Dex deployment in the infrastructure chart
-  issuer: "https://bm4080.taildf7067.ts.net/dex"
-
 # Spoke clusters registered on the hub. Each needs a <name>-kubeconfig Secret
 # (server + CA) and a projected <name>-token in the controllers that engage it
 # (see spokeTokens). Labels let a controller engage only the clusters it serves.
@@ -12,10 +8,18 @@ fleet:
   clusters:
     - name: us
       displayName: "US Cluster"
+      labels:
+        platform.example.com/region: us
     - name: eu
       displayName: "EU Cluster"
       labels:
+        platform.example.com/region: eu
         platform.example.com/offers-vms: "true"
+    - name: eu-storage
+      displayName: "EU Storage Cluster"
+      labels:
+        platform.example.com/region: eu
+        platform.example.com/offers-object-storage: "true"
 
 # VmSet service (VM tiers). Tier names become the allowed `size` values.
 vmSet:
@@ -32,6 +36,13 @@ vmSet:
   # single-quoted shell line in the generated user-data.
   sshPublicKeyPattern: "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+( [A-Za-z0-9@._-]+)?$"
 
+# Bucket service (S3 quota tiers). Tier names become the allowed `size` values.
+bucket:
+  tiers:
+    S: { maxSize: 1Gi, maxObjects: 10000 }
+    M: { maxSize: 10Gi, maxObjects: 100000 }
+  defaultSize: S
+
 # Places VmSet requests on VM-capable spokes as KubeVirt VMs.
 vmBindingController:
   enabled: true
@@ -39,7 +50,7 @@ vmBindingController:
   image:
     repository: sojoner/vm-binding-controller
     tag: dev
-    pullPolicy: Always
+    pullPolicy: IfNotPresent
   # Numeric UID of the distroless `nonroot` user; kubelet cannot verify the name.
   runAsUser: 65532
   # Only ClusterProfiles carrying these labels are engaged (see fleet.clusters).
@@ -58,31 +69,33 @@ vmBindingController:
         audience: homelab:eu-spoke
         expirationSeconds: 3600
 
-bindingController:
+# Places Bucket requests on object-storage spokes as Rook ObjectBucketClaims.
+bucketBindingController:
+  enabled: true
   replicas: 1
-  metricsPort: 8080
   image:
-    repository: sojoner/binding-controller
+    repository: sojoner/bucket-binding-controller
     tag: dev
-    pullPolicy: Always
+    pullPolicy: IfNotPresent
+  # Numeric UID of the distroless `nonroot` user; kubelet cannot verify the name.
+  runAsUser: 65532
+  # Only ClusterProfiles carrying these labels are engaged (see fleet.clusters).
+  clusterSelector: "platform.example.com/offers-object-storage=true"
+  # ClusterProfile label naming the region a spoke serves.
+  regionLabel: platform.example.com/region
+  # Must match the bucket StorageClass of the spoke's Rook object store.
+  storageClass: ceph-bucket
+  requeueInterval: 30s
+  cleanupInterval: 5s
+  pollInterval: 10s
+  defaultNamespace: default
+  metricsPort: 8080
   resources:
     requests: { cpu: 20m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }
-  dex:
-    enabled: true
-    clientID: us-spoke-controller
-    secretName: binding-controller-dex
-    secretKey: client-secret
-    pluginImage:
-      repository: sojoner/dex-auth-plugin
-      tag: dev
-      pullPolicy: Always
+  # One projected token per object-storage spoke; path must be <clusterName>-token.
   spokeTokens:
     - serviceAccountToken:
-        path: us-token
-        audience: homelab:us-spoke
-        expirationSeconds: 3600
-    - serviceAccountToken:
-        path: eu-token
-        audience: homelab:eu-spoke
+        path: eu-storage-token
+        audience: homelab:eu-storage-spoke
         expirationSeconds: 3600

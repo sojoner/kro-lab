@@ -1,0 +1,74 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: bucket-tenant-rbac
+spec:
+  cluster: eu-storage
+  description: >
+    RBAC on the eu-storage spoke for the bucket service. The hub's
+    bucket-binding-controller manages claims only in tenant namespaces and
+    cannot read credentials; tenants read their claims and endpoint, only
+    admins and developers read the S3 credentials, nobody reaches another
+    tenant, and nobody creates or deletes claims directly.
+  steps:
+  - name: bucket-binding-controller scope
+    try:
+    - script:
+        content: |
+          set -u
+          C="hub:system:serviceaccount:default:bucket-binding-controller"
+          can() { kubectl auth can-i "$@" --as="$C"; }
+          fail=0
+          expect() { want=$1; shift; got=$(can "$@"); if [ "$got" != "$want" ]; then echo "FAIL: can-i $* => $got, want $want"; fail=1; else echo "OK: can-i $* => $got"; fi; }
+          expect yes list   objectbucketclaims.objectbucket.io -A
+          expect yes watch  objectbucketclaims.objectbucket.io -A
+          expect yes create objectbucketclaims.objectbucket.io -n acme-corp
+          expect yes delete objectbucketclaims.objectbucket.io -n globex-inc
+          expect yes get    configmaps -n acme-corp
+          expect no  get    secrets -n acme-corp
+          expect no  create objectbucketclaims.objectbucket.io -n kube-system
+          expect no  get    configmaps -n kube-system
+          expect no  create pods -n acme-corp
+          expect no  create clusterroles.rbac.authorization.k8s.io
+          exit $fail
+  - name: tenant role tiers
+    try:
+    - script:
+        content: |
+          set -u
+          fail=0
+          # SubjectAccessReview, not `kubectl auth can-i`: can-i mis-parses
+          # resource/subresource.group strings and can answer wrongly.
+          allowed() { # user group verb apiGroup resource namespace
+            cat <<EOF | kubectl create -f - -o jsonpath='{.status.allowed}'
+          apiVersion: authorization.k8s.io/v1
+          kind: SubjectAccessReview
+          spec:
+            user: "dex:$1"
+            groups: ["dex:$2"]
+            resourceAttributes: {verb: "$3", group: "$4", resource: "$5", namespace: "$6"}
+          EOF
+          }
+          expect() { want=$1; shift; got=$(allowed "$@"); if [ "$got" != "$want" ]; then echo "FAIL: $* => $got, want $want"; fail=1; else echo "OK: $* => $got"; fi; }
+          ALICE="alice@acme-corp.example.com acme-corp-admin"
+          BOB="bob@acme-corp.example.com acme-corp-developer"
+          CAROL="carol@acme-corp.example.com acme-corp-analyst"
+          EVE="eve@globex-inc.example.com globex-inc-developer"
+          OBC="objectbucket.io objectbucketclaims"
+          # credentials (the claim's Secret): admin and developer yes; analyst and other tenants no
+          expect true  $ALICE get "" secrets acme-corp
+          expect true  $BOB   get "" secrets acme-corp
+          expect false $CAROL get "" secrets acme-corp
+          expect false $EVE   get "" secrets acme-corp
+          # credentials are fetched by name, never listed
+          expect false $BOB   list "" secrets acme-corp
+          # claim and endpoint: every tier in the own tenant, nobody across tenants
+          expect true  $BOB   list  objectbucket.io objectbucketclaims acme-corp
+          expect true  $CAROL get   objectbucket.io objectbucketclaims acme-corp
+          expect true  $CAROL get   "" configmaps acme-corp
+          expect false $EVE   list  objectbucket.io objectbucketclaims acme-corp
+          expect false $EVE   get   "" configmaps acme-corp
+          # tenants order buckets through the platform, never by creating or deleting claims
+          expect false $ALICE create objectbucket.io objectbucketclaims acme-corp
+          expect false $BOB   delete objectbucket.io objectbucketclaims acme-corp
+          exit $fail

@@ -14,7 +14,7 @@ data:
       - issuer:
           url: {{ .Values.authConfiguration.hubIssuer.url | quote }}
           audiences:
-            - {{ .Values.authConfiguration.hubIssuer.audience | quote }}
+            - {{ required "authConfiguration.hubIssuer.audience must be set per spoke (values-<name>.yaml)" .Values.authConfiguration.hubIssuer.audience | quote }}
           {{- if .Values.authConfiguration.hubIssuer.certificateAuthority }}
           certificateAuthority: {{ .Values.authConfiguration.hubIssuer.certificateAuthority | quote }}
           {{- end }}

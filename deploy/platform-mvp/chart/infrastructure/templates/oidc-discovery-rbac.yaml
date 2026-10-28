@@ -1,6 +1,6 @@
 # kubeadm's default system:service-account-issuer-discovery ClusterRoleBinding
 # only grants system:serviceaccounts — it never included cross-cluster
-# anonymous callers. The us spoke's apiserver fetches this hub's
+# anonymous callers. Each spoke's apiserver fetches this hub's
 # /.well-known/openid-configuration and /openid/v1/jwks unauthenticated (it
 # has no identity of its own here) to validate controller SA tokens, so it
 # needs its own binding. A separate name — not the autoupdate-annotated

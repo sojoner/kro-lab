@@ -2,7 +2,7 @@
 # Umbrella Helm charts + Flux CD + Chainsaw E2E
 #
 # Quick start:
-#   make deploy        → build+push images (parallel) + deploy everything
+#   make deploy        → build images, load them into kind, deploy everything (no registry needed)
 #   make grafana       → port-forward Grafana to localhost:3000
 #   make validate      → run Chainsaw E2E tests
 #   make clean         → destroy everything
@@ -18,11 +18,15 @@ KIND_HUB_CONFIG   ?= deploy/platform-mvp/kind/kind-hub.yaml
 # Spoke clusters (kind cluster name == spoke name == ClusterProfile name ==
 # chart/spoke/values-<name>.yaml). Adding a spoke = one entry here plus a
 # KIND_NODE_IMAGE_<name>, a values file, and a hub-services fleet entry.
-SPOKES            ?= us eu
+SPOKES            ?= us eu eu-storage
 KIND_NODE_IMAGE_us ?= kindest/node:v1.30.0
 # KubeVirt 1.9 supports Kubernetes 1.34-1.36 only.
 KIND_NODE_IMAGE_eu ?= kindest/node:v1.35.1
+KIND_NODE_IMAGE_eu-storage ?= kindest/node:v1.35.1
 KIND_SPOKE_CONFIG_TMPL ?= deploy/platform-mvp/kind/kind-spoke.yaml.tmpl
+# Spokes hosting a Ceph OSD get a template that also mounts the host udev db.
+KIND_SPOKE_CONFIG_TMPL_eu-storage ?= deploy/platform-mvp/kind/kind-spoke-storage.yaml.tmpl
+HOST_UDEV_DIR     ?= /run/udev
 KIND_RENDER_DIR   ?= deploy/platform-mvp/kind/rendered
 # Per-spoke apiserver auth dir, mounted into the spoke's control plane.
 # Readable/writable by the invoking user (no root-owned /tmp race, survives
@@ -30,7 +34,7 @@ KIND_RENDER_DIR   ?= deploy/platform-mvp/kind/rendered
 # location, never a machine-specific absolute path. Spoke X uses X-auth/.
 SPOKE_AUTH_BASE   ?= $(abspath $(dir $(KIND_SPOKE_CONFIG_TMPL)))
 
-HUB_CHART          ?= deploy/platform-mvp/chart/infrastructure
+INFRA_CHART        ?= deploy/platform-mvp/chart/infrastructure
 SPOKE_CHART        ?= deploy/platform-mvp/chart/spoke
 CRDS_CHART         ?= deploy/platform-mvp/chart/crds
 HUBSVC_CHART       ?= deploy/platform-mvp/chart/hub-services
@@ -41,38 +45,47 @@ GRAFANA_URL        ?= http://$(INGRESS_HOST)
 GRAFANA_PF_PORT    ?= 3000
 OBS_NS             ?= monitoring
 
-BC_KUBECONFIG      ?= $(HOME)/.kube/config
 SPOKE_KC_DIR       ?= hack/platform-mvp
 
 CHAINSAW_DIR       ?= tests/e2e
 CHAINSAW_REPORT    ?= chainsaw-report.json
 CHAINSAW_RUNNER_DIR ?= deploy/platform-mvp/observability
-CRONJOB_SCHEDULE   ?= "*/2 * * * *"
 
 DOCKER_REGISTRY    ?= sojoner
 IMAGE_TAG          ?= dev
-BC_DIR             ?= platform-mvp/binding-controller
-WO_DIR             ?= platform-mvp/widget-operator
 OV_DIR             ?= platform-mvp/oidc-verifier
-DAP_DIR            ?= platform-mvp/dex-auth-plugin
 VMBC_DIR           ?= platform-mvp/vm-binding-controller
+BBC_DIR            ?= platform-mvp/bucket-binding-controller
+# Go modules besides the root one; every test/lint/race target loops over these.
+GO_MODULES         ?= $(OV_DIR) $(VMBC_DIR) $(BBC_DIR)
 
-BC_IMAGE           ?= $(DOCKER_REGISTRY)/binding-controller:$(IMAGE_TAG)
-WO_IMAGE           ?= $(DOCKER_REGISTRY)/widget-operator:$(IMAGE_TAG)
 OV_IMAGE           ?= $(DOCKER_REGISTRY)/oidc-verifier:$(IMAGE_TAG)
-DAP_IMAGE          ?= $(DOCKER_REGISTRY)/dex-auth-plugin:$(IMAGE_TAG)
 VMBC_IMAGE         ?= $(DOCKER_REGISTRY)/vm-binding-controller:$(IMAGE_TAG)
+BBC_IMAGE          ?= $(DOCKER_REGISTRY)/bucket-binding-controller:$(IMAGE_TAG)
 
 CRDS_DIR           ?= deploy/platform-mvp/crds
 OUT_DIR            ?= bin
-BC_BIN             ?= $(OUT_DIR)/binding-controller
+VMBC_BIN           ?= $(OUT_DIR)/vm-binding-controller
+BBC_BIN            ?= $(OUT_DIR)/bucket-binding-controller
 FLUX_DIR           ?= deploy/platform-mvp/flux
 CERT_MANAGER_VERSION ?= v1.17.1
+CHAINSAW_VERSION   ?= v0.2.15
 
 # KubeVirt runs only on these spokes (needs /dev/kvm on the host). Its operator
 # manifest is cached under CRDS_DIR like the other upstream manifests.
 KUBEVIRT_VERSION   ?= v1.9.1
 KUBEVIRT_SPOKES    ?= eu
+
+# Rook/Ceph (S3 via RADOS Gateway) runs on these spokes. Each gets a loop-device
+# OSD created inside its worker node (privileged kind node, no host sudo).
+ROOK_VERSION       ?= 1.21.1
+ROOK_REPO          ?= https://charts.rook.io/release
+ROOK_NS            ?= rook-ceph
+ROOK_DIR           ?= deploy/platform-mvp/rook
+ROOK_SPOKES        ?= eu-storage
+CEPH_LOOP_SIZE     ?= 20G
+CEPH_LOOP_IMG      ?= /var/lib/ceph-osd.img
+ROOK_TIMEOUT       ?= 10m
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 .PHONY: help
@@ -83,22 +96,26 @@ help:
 	@echo "  make deploy        Full deployment (clusters + 4 waves)"
 	@echo "  make deploy-wave1  Wave 1: Install all CRDs on hub + spokes"
 	@echo "  make deploy-wave2  Wave 2: Infrastructure on hub (LGTM + Dex + ingress)"
-	@echo "  make deploy-wave3  Wave 3: Hub services (Kro + binding-controller + fleet)"
-	@echo "  make deploy-wave4  Wave 4: Spokes (widget-operator + oidc-verifier + tenant RBAC; KubeVirt on KUBEVIRT_SPOKES)"
+	@echo "  make deploy-wave3  Wave 3: Hub services (Kro + VM/bucket binding controllers + fleet)"
+	@echo "  make deploy-wave4  Wave 4: Spokes (oidc-verifier + tenant RBAC; KubeVirt on KUBEVIRT_SPOKES, Rook/Ceph on ROOK_SPOKES)"
+	@echo "  make deploy-rook   Rook/Ceph + RADOS Gateway on ROOK_SPOKES (also part of wave 4)"
 	@echo "  make deploy-cd     Enable GitOps (Flux CD) on hub"
 	@echo "  make clusters      Create kind clusters"
 	@echo ""
 	@echo "Test:"
-	@echo "  make test          Run all Go unit tests"
+	@echo "  make test          Run all Go unit tests (root + GO_MODULES)"
 	@echo "  make test-race     Unit tests with race detector"
 	@echo "  make test-cover    Unit tests with coverage profiles"
-	@echo "  make validate      Run full Chainsaw E2E suite (20 tests)"
-	@echo "  make lint          go vet + gofmt check"
+	@echo "  make validate      Run the full Chainsaw E2E suite"
+	@echo "  make lint          retired-reference guard + go vet + gofmt check"
+	@echo "  make check-retired Fail if the retired demo payload is referenced again"
 	@echo "  make lint-fix      Auto-fix formatting + go vet"
 	@echo ""
 	@echo "Build:"
-	@echo "  make build-images  Build all 4 Docker images in parallel"
-	@echo "  make push-images   Push all 4 images to Docker Hub"
+	@echo "  make build         Build the controller binaries into $(OUT_DIR)/"
+	@echo "  make build-images  Build all Docker images"
+	@echo "  make load-images   Load the images into the kind clusters (part of make deploy)"
+	@echo "  make push-images   Optional: push the images to $(DOCKER_REGISTRY)"
 	@echo ""
 	@echo "Observe:"
 	@echo "  make grafana       Port-forward Grafana → localhost:3000"
@@ -115,52 +132,58 @@ help:
 	@echo "  make verify-all         Full clean-room: clean → deploy → validate → deploy-cd"
 
 # ── Test ─────────────────────────────────────────────────────────────────────
-.PHONY: test test-root test-bc test-wo test-ov test-dap test-vmbc test-race test-cover
-test: test-root test-bc test-wo test-ov test-dap test-vmbc
+.PHONY: test test-root test-ov test-vmbc test-bbc test-race test-cover
+test: test-root test-ov test-vmbc test-bbc
 	@echo "==> All unit tests passed"
 
 test-root:
 	go test ./... -count=1
 
-test-bc:
-	cd $(BC_DIR) && go test ./... -count=1
-
-test-wo:
-	cd $(WO_DIR) && go test ./... -count=1
-
 test-ov:
 	cd $(OV_DIR) && go test ./... -count=1
-
-test-dap:
-	cd $(DAP_DIR) && go test ./... -count=1
 
 test-vmbc:
 	cd $(VMBC_DIR) && go test ./... -count=1
 
+test-bbc:
+	cd $(BBC_DIR) && go test ./... -count=1
+
 test-race:
 	go test -race ./... -count=1
-	cd $(BC_DIR) && go test -race ./... -count=1
-	cd $(WO_DIR) && go test -race ./... -count=1
-	cd $(OV_DIR) && go test -race ./... -count=1
-	cd $(DAP_DIR) && go test -race ./... -count=1
-	cd $(VMBC_DIR) && go test -race ./... -count=1
+	@for d in $(GO_MODULES); do (cd $$d && go test -race ./... -count=1) || exit 1; done
 
 test-cover:
 	go test -coverprofile=coverage-root.out ./...
-	cd $(BC_DIR) && go test -coverprofile=../../coverage-bc.out ./...
-	cd $(WO_DIR) && go test -coverprofile=../../coverage-wo.out ./...
-	cd $(DAP_DIR) && go test -coverprofile=../../coverage-dap.out ./... 2>/dev/null || true
+	cd $(VMBC_DIR) && go test -coverprofile=../../coverage-vmbc.out ./...
+	cd $(BBC_DIR) && go test -coverprofile=../../coverage-bbc.out ./...
 	@echo "Coverage: coverage-*.out"
 
 # ── Lint ─────────────────────────────────────────────────────────────────────
-.PHONY: lint lint-fix
-lint:
+.PHONY: lint lint-fix check-retired check-runner-tests
+# The demo payload the Bucket service replaced must not come back into code,
+# charts, tests or docs. The [w] keeps the pattern from matching its own line.
+# Tracked and new files only, so generated reports are ignored.
+RETIRED_PATHS ?= deploy platform-mvp tests hack providers Makefile README.md docs
+check-retired:
+	@echo "==> checking for retired demo-payload references"
+	@if git grep -iIlE --untracked '[w]idget' -- $(RETIRED_PATHS); then \
+		echo "ERROR: retired demo-payload references remain (files above)"; \
+		exit 1; \
+	fi
+
+# Every test the in-cluster runner is told to run must exist (a renumbering would otherwise
+# only show up as a failing CronJob).
+RUNNER_TESTS_VALUES ?= deploy/platform-mvp/chart/infrastructure/values.yaml
+check-runner-tests:
+	@echo "==> checking the in-cluster runner's test list"
+	@missing=0; for t in $$(sed -n '/^cronjob:/,/^[a-z]/p' $(RUNNER_TESTS_VALUES) | sed -n 's/^    - \(.*\)$$/\1/p'); do \
+		[ -d "$(CHAINSAW_DIR)/tests/$$t" ] || { echo "ERROR: cronjob.tests entry '$$t' is not a directory under $(CHAINSAW_DIR)/tests"; missing=1; }; \
+	done; [ $$missing = 0 ]
+
+lint: check-retired check-runner-tests
 	@echo "==> go vet + gofmt check"
 	go vet ./...
-	cd $(BC_DIR) && go vet ./...
-	cd $(WO_DIR) && go vet ./...
-	cd $(OV_DIR) && go vet ./...
-	cd $(VMBC_DIR) && go vet ./...
+	@for d in $(GO_MODULES); do (cd $$d && go vet ./...) || exit 1; done
 	@if [ -n "$$(gofmt -l .)" ]; then \
 		echo "ERROR: files not formatted:"; \
 		gofmt -l .; \
@@ -169,82 +192,75 @@ lint:
 
 lint-fix:
 	gofmt -w .
-	cd $(BC_DIR) && gofmt -w .
-	cd $(WO_DIR) && gofmt -w .
-	cd $(OV_DIR) && gofmt -w .
-	cd $(VMBC_DIR) && gofmt -w .
+	@for d in $(GO_MODULES); do (cd $$d && gofmt -w .) || exit 1; done
 	go vet ./...
-	cd $(BC_DIR) && go vet ./...
-	cd $(WO_DIR) && go vet ./...
-	cd $(OV_DIR) && go vet ./...
+	@for d in $(GO_MODULES); do (cd $$d && go vet ./...) || exit 1; done
 
 # ── Build ────────────────────────────────────────────────────────────────────
-.PHONY: build build-bc build-wo build-ov build-dap
-build: build-bc
+.PHONY: build build-vmbc build-bbc
+build: build-vmbc build-bbc
 
-build-bc:
+build-vmbc:
 	@mkdir -p $(OUT_DIR)
-	cd $(BC_DIR) && go build -o ../../$(BC_BIN) .
+	cd $(VMBC_DIR) && go build -o ../../$(VMBC_BIN) .
+
+build-bbc:
+	@mkdir -p $(OUT_DIR)
+	cd $(BBC_DIR) && go build -o ../../$(BBC_BIN) .
 
 # ── Docker images (build only) ───────────────────────────────────────────────
-.PHONY: build-images build-bc-image build-wo-image build-ov-image build-dap-image build-vmbc-image
+.PHONY: build-images build-images-parallel build-ov-image build-vmbc-image build-bbc-image
 
-build-images: build-bc-image build-wo-image build-ov-image build-dap-image build-vmbc-image
-
-build-bc-image:
-	@echo "==> Building $(BC_IMAGE)"
-	docker build -f $(BC_DIR)/Dockerfile -t $(BC_IMAGE) .
-
-build-wo-image:
-	@echo "==> Building $(WO_IMAGE)"
-	docker build -f $(WO_DIR)/Dockerfile -t $(WO_IMAGE) .
+build-images: build-ov-image build-vmbc-image build-bbc-image
 
 build-ov-image:
 	@echo "==> Building $(OV_IMAGE)"
 	docker build -f $(OV_DIR)/Dockerfile -t $(OV_IMAGE) .
 
-build-dap-image:
-	@echo "==> Building $(DAP_IMAGE)"
-	docker build -f $(DAP_DIR)/Dockerfile -t $(DAP_IMAGE) .
-
 build-vmbc-image:
 	@echo "==> Building $(VMBC_IMAGE)"
 	docker build -f $(VMBC_DIR)/Dockerfile -t $(VMBC_IMAGE) .
 
+build-bbc-image:
+	@echo "==> Building $(BBC_IMAGE)"
+	docker build -f $(BBC_DIR)/Dockerfile -t $(BBC_IMAGE) .
+
 # Build all images in parallel
 build-images-parallel:
 	@echo "==> Building all images in parallel"
-	@$(MAKE) --no-print-directory build-bc-image & \
-	$(MAKE) --no-print-directory build-wo-image & \
 	$(MAKE) --no-print-directory build-ov-image & \
-	$(MAKE) --no-print-directory build-dap-image & \
 	$(MAKE) --no-print-directory build-vmbc-image & \
+	$(MAKE) --no-print-directory build-bbc-image & \
 	wait
 	@echo "==> All images built"
 
-# ── Docker push (parallel by default) ────────────────────────────────────────
-.PHONY: push-images push-bc push-wo push-ov push-dap push-vmbc
+# ── Load images into kind (what `make deploy` uses; no registry needed) ───────
+# Controllers run on the hub; the OIDC verifier runs on every spoke. The charts use
+# pullPolicy IfNotPresent, so a loaded image is never pulled. After rebuilding an image,
+# `kubectl rollout restart` the Deployment to pick it up.
+.PHONY: load-images
+load-images:
+	@echo "==> Loading images into kind"
+	kind load docker-image $(VMBC_IMAGE) $(BBC_IMAGE) --name $(KIND_HUB)
+	@for s in $(SPOKES); do kind load docker-image $(OV_IMAGE) --name $$s || exit 1; done
 
-push-images: push-bc push-wo push-ov push-dap push-vmbc
+# ── Docker push (optional: share images through a registry) ──────────────────
+.PHONY: push-images push-images-parallel push-ov push-vmbc push-bbc
 
-push-bc:
-	docker push $(BC_IMAGE)
-push-wo:
-	docker push $(WO_IMAGE)
+push-images: push-ov push-vmbc push-bbc
+
 push-ov:
 	docker push $(OV_IMAGE)
-push-dap:
-	docker push $(DAP_IMAGE)
 push-vmbc:
 	docker push $(VMBC_IMAGE)
+push-bbc:
+	docker push $(BBC_IMAGE)
 
 push-images-parallel:
 	@echo "==> Pushing all images to $(DOCKER_REGISTRY)"
-	docker push $(BC_IMAGE) & \
-	docker push $(WO_IMAGE) & \
 	docker push $(OV_IMAGE) & \
-	docker push $(DAP_IMAGE) & \
 	docker push $(VMBC_IMAGE) & \
+	docker push $(BBC_IMAGE) & \
 	wait
 	@echo "==> All images pushed"
 
@@ -286,7 +302,8 @@ render-kind-config-%:
 	@mkdir -p "$(KIND_RENDER_DIR)" "$(SPOKE_AUTH_BASE)/$*-auth"
 	@sed -e 's|__AUTH_DIR__|$(SPOKE_AUTH_BASE)/$*-auth|' \
 		-e 's|__NODE_IMAGE__|$(KIND_NODE_IMAGE_$*)|' \
-		$(KIND_SPOKE_CONFIG_TMPL) > $(KIND_RENDER_DIR)/kind-$*.yaml
+		-e 's|__UDEV_DIR__|$(HOST_UDEV_DIR)|' \
+		$(or $(KIND_SPOKE_CONFIG_TMPL_$*),$(KIND_SPOKE_CONFIG_TMPL)) > $(KIND_RENDER_DIR)/kind-$*.yaml
 
 # Re-derive each spoke apiserver's AuthenticationConfiguration from the chart
 # on every `make clusters` / `make deploy` / `make validate` run so a stale or
@@ -356,15 +373,14 @@ clusters:
 # Wave-based deployment: each wave is a Helm chart that groups related resources.
 # Flux/GitOps path mirrors this with HelmRelease dependsOn chains.
 .PHONY: deploy deploy-wave1 deploy-wave2 deploy-wave3 deploy-wave4
-.PHONY: deploy-us deploy-hub  # legacy aliases
 
 deploy: crds
 	@echo "==> Building images and creating clusters in parallel"
 	$(MAKE) build-images-parallel & \
 	$(MAKE) clusters & \
 	wait
-	$(MAKE) push-images-parallel
-	@echo "==> Wave 1: CRDs on hub + us"
+	$(MAKE) load-images
+	@echo "==> Wave 1: CRDs on hub + spokes"
 	$(MAKE) deploy-wave1
 	@echo "==> Wave 2 (infra on hub) + Wave 4 (spokes) in parallel"
 	@$(MAKE) --no-print-directory deploy-wave2 & \
@@ -378,9 +394,11 @@ deploy: crds
 	$(MAKE) ensure-spoke-auth-config
 	@echo "==> Wave 3: Hub services on hub"
 	$(MAKE) deploy-wave3
+	@echo "==> In-cluster Chainsaw runner (CronJob needs its image and kubeconfig Secret)"
+	$(MAKE) chainsaw-runner
 	@echo "==> Platform deploy complete (Flux not yet installed — run 'make deploy-cd' for GitOps)"
 
-# ── Wave 1: CRDs (both hub and us, cluster-scoped) ──────────────────────────
+# ── Wave 1: CRDs (hub and every spoke, cluster-scoped) ───────────────────────
 deploy-wave1: crds
 	@echo "==> Wave 1: Installing platform CRDs on hub + spokes"
 	helm upgrade --install crds $(CRDS_CHART) \
@@ -393,24 +411,22 @@ deploy-wave1: crds
 	done
 	@echo "  Waiting for Kro CRDs..."
 	kubectl --context kind-$(KIND_HUB) wait --for=condition=Established crd/resourcegraphdefinitions.kro.run --timeout=30s
-	@for s in $(SPOKES); do \
-		kubectl --context kind-$$s wait --for=condition=Established crd/widgets.platform.example.com --timeout=30s || exit 1; \
-	done
+	kubectl --context kind-$(KIND_HUB) wait --for=condition=Established crd/regionalbucketrequests.platform.example.com crd/regionalvmsetrequests.platform.example.com --timeout=30s
 	@echo "==> Wave 1 complete"
 
 # ── Wave 2: Infrastructure (hub context) ──────────────────────────────────────
 deploy-wave2:
 	@echo "==> Wave 2: Installing infrastructure on hub"
-	@if [ "$(HUB_CHART)/Chart.lock" -ot "$(HUB_CHART)/Chart.yaml" ]; then \
+	@if [ "$(INFRA_CHART)/Chart.lock" -ot "$(INFRA_CHART)/Chart.yaml" ]; then \
 		echo "  Chart.yaml changed, running helm dependency update..."; \
-		helm dependency update $(HUB_CHART) > /dev/null; \
+		helm dependency update $(INFRA_CHART) > /dev/null; \
 	else \
 		echo "  Chart.lock is fresh, skipping helm dependency update"; \
 	fi
-	helm upgrade --install hub $(HUB_CHART) \
+	helm upgrade --install hub $(INFRA_CHART) \
 		-n $(OBS_NS) --create-namespace --timeout $(HELM_TIMEOUT) \
 		--set ingress.host=$(INGRESS_HOST) \
-		-f $(HUB_CHART)/e2e-values.yaml \
+		-f $(INFRA_CHART)/e2e-values.yaml \
 		--kube-context kind-$(KIND_HUB)
 	@echo "  Waiting for core infra..."
 	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) rollout status deploy/hub-cert-manager --timeout=2m &
@@ -420,9 +436,9 @@ deploy-wave2:
 	@echo "  Waiting for Dex..."
 	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) rollout status deploy/dex --timeout=2m
 	@echo "  Enabling Grafana Ingress..."
-	helm upgrade hub $(HUB_CHART) -n $(OBS_NS) --timeout 60s \
+	helm upgrade hub $(INFRA_CHART) -n $(OBS_NS) --timeout 60s \
 		--set ingress.host=$(INGRESS_HOST) --set ingress.enabled=true \
-		-f $(HUB_CHART)/e2e-values.yaml \
+		-f $(INFRA_CHART)/e2e-values.yaml \
 		--kube-context kind-$(KIND_HUB)
 	@echo "  Waiting for Grafana (may have restarted from the ingress upgrade)..."
 	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) rollout status deploy/hub-grafana --timeout=60s
@@ -442,6 +458,8 @@ deploy-wave3:
 	helm upgrade --install hub-services $(HUBSVC_CHART) \
 		-n default --create-namespace --timeout $(HELM_TIMEOUT) \
 		-f $(HUBSVC_CHART)/e2e-values.yaml \
+		--set vmBindingController.image.repository=$(DOCKER_REGISTRY)/vm-binding-controller --set vmBindingController.image.tag=$(IMAGE_TAG) \
+		--set bucketBindingController.image.repository=$(DOCKER_REGISTRY)/bucket-binding-controller --set bucketBindingController.image.tag=$(IMAGE_TAG) \
 		--kube-context kind-$(KIND_HUB)
 	@echo "  Creating secrets..."
 	@for s in $(SPOKES); do \
@@ -449,14 +467,9 @@ deploy-wave3:
 			--from-file=value=$(SPOKE_KC_DIR)/kubeconfig-$$s-internal \
 			--dry-run=client -o yaml | kubectl --context kind-$(KIND_HUB) apply -f - || exit 1; \
 	done
-	kubectl --context kind-$(KIND_HUB) create secret generic binding-controller-dex \
-		--from-literal=client-secret=us-spoke-controller-secret-demo \
-		--dry-run=client -o yaml | kubectl --context kind-$(KIND_HUB) apply -f - &
-	wait
-	@echo "  Restarting controllers..."
-	kubectl --context kind-$(KIND_HUB) -n default rollout restart deployment/binding-controller &
-	wait
-	kubectl --context kind-$(KIND_HUB) -n default rollout status deployment/binding-controller --timeout=60s
+	@echo "  Waiting for controllers..."
+	kubectl --context kind-$(KIND_HUB) -n default rollout status deployment/vm-binding-controller --timeout=60s
+	kubectl --context kind-$(KIND_HUB) -n default rollout status deployment/bucket-binding-controller --timeout=60s
 	kubectl --context kind-$(KIND_HUB) -n kro-system rollout status deployment/kro --timeout=2m
 	@echo "==> Wave 3 complete"
 
@@ -471,20 +484,41 @@ deploy-wave4:
 			kubectl --context kind-$$s wait --for=condition=Established crd/kubevirts.kubevirt.io --timeout=60s || exit 1; \
 		fi; \
 		helm upgrade --install $$s $(SPOKE_CHART) -f $(SPOKE_CHART)/values-$$s.yaml \
+			--set oidcVerifier.image.repository=$(DOCKER_REGISTRY)/oidc-verifier --set oidcVerifier.image.tag=$(IMAGE_TAG) \
 			-n default --create-namespace --wait --timeout $(HELM_TIMEOUT) \
 			--kube-context kind-$$s || exit 1; \
-		kubectl --context kind-$$s -n default rollout status deployment/widget-operator --timeout=60s || exit 1; \
 		kubectl --context kind-$$s -n default rollout status deployment/oidc-verifier --timeout=60s || exit 1; \
 		if echo " $(KUBEVIRT_SPOKES) " | grep -q " $$s "; then \
 			echo "  Waiting for KubeVirt on $$s (operator rolls out its components)"; \
 			kubectl --context kind-$$s -n kubevirt wait kv/kubevirt --for=condition=Available --timeout=10m || exit 1; \
 		fi; \
+		if echo " $(ROOK_SPOKES) " | grep -q " $$s "; then \
+			$(MAKE) --no-print-directory deploy-rook-$$s || exit 1; \
+		fi; \
 	done
 	@echo "==> Wave 4 complete"
 
-# Legacy aliases
-deploy-us: deploy-wave4
-deploy-hub: deploy-wave1 deploy-wave2 deploy-wave3
+# ── Rook/Ceph on storage spokes ──────────────────────────────────────────────
+.PHONY: deploy-rook
+deploy-rook: $(addprefix deploy-rook-,$(ROOK_SPOKES))
+
+# Create the OSD loop device in the worker (idempotent: reuse an existing one),
+# install the operator then the cluster with that device, wait for the S3 store.
+deploy-rook-%:
+	@echo "==> Rook/Ceph on $*"
+	@DEV=$$(docker exec $*-worker losetup -j $(CEPH_LOOP_IMG) | cut -d: -f1 | head -n1); \
+	if [ -z "$$DEV" ]; then \
+		DEV=$$(docker exec $*-worker sh -c 'truncate -s $(CEPH_LOOP_SIZE) $(CEPH_LOOP_IMG) && losetup -f --show $(CEPH_LOOP_IMG)') || exit 1; \
+	fi; \
+	echo "  OSD device: $$DEV"; \
+	helm upgrade --install rook-ceph rook-ceph --repo $(ROOK_REPO) --version $(ROOK_VERSION) \
+		-n $(ROOK_NS) --create-namespace -f $(ROOK_DIR)/operator-values.yaml \
+		--wait --timeout $(HELM_TIMEOUT) --kube-context kind-$* || exit 1; \
+	helm upgrade --install rook-ceph-cluster rook-ceph-cluster --repo $(ROOK_REPO) --version $(ROOK_VERSION) \
+		-n $(ROOK_NS) -f $(ROOK_DIR)/cluster-values.yaml \
+		--set "cephClusterSpec.storage.devices[0].name=$$DEV" \
+		--timeout $(HELM_TIMEOUT) --kube-context kind-$* || exit 1
+	kubectl --context kind-$* -n $(ROOK_NS) wait cephobjectstore/s3 --for=jsonpath='{.status.phase}'=Ready --timeout=$(ROOK_TIMEOUT)
 
 # ── Flux / GitOps ────────────────────────────────────────────────────────────
 .PHONY: deploy-flux deploy-cd verify-all
@@ -499,13 +533,8 @@ deploy-flux:
 	kubectl --context kind-$(KIND_HUB) apply -f $(FLUX_DIR)/
 	@echo "==> Flux ready"
 
-deploy-cd:
-	@echo "==> Enabling GitOps (Flux CD) — takes over hub HelmRelease management"
-	flux install --components=source-controller,helm-controller,kustomize-controller \
-		--context=kind-$(KIND_HUB) --namespace=flux-system
-	kubectl --context kind-$(KIND_HUB) apply -f $(FLUX_DIR)/bootstrap/flux-setup.yaml
-	sleep 3
-	kubectl --context kind-$(KIND_HUB) apply -f $(FLUX_DIR)/
+# Same install as deploy-flux; from here Flux takes over the hub HelmReleases.
+deploy-cd: deploy-flux
 	@echo "==> GitOps enabled — Flux now manages the hub HelmRelease"
 
 verify-all:
@@ -519,14 +548,14 @@ verify-all:
 # ── Chainsaw runner ──────────────────────────────────────────────────────────
 .PHONY: chainsaw-runner
 chainsaw-runner:
-	docker build -t chainsaw-runner:local -f $(CHAINSAW_RUNNER_DIR)/Dockerfile.chainsaw-runner .
+	docker build --build-arg CHAINSAW_VERSION=$(CHAINSAW_VERSION) -t chainsaw-runner:local -f $(CHAINSAW_RUNNER_DIR)/Dockerfile.chainsaw-runner .
 	kind load docker-image chainsaw-runner:local --name $(KIND_HUB)
-	@echo "  Setting up kubeconfig secrets for CronJob..."
-	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) delete secret kubeconfigs --ignore-not-found
+	@echo "  Setting up kubeconfig secrets for CronJob (cluster-internal addresses)..."
+	kind get kubeconfig --name $(KIND_HUB) --internal > $(SPOKE_KC_DIR)/kubeconfig-$(KIND_HUB)-internal
 	kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) create secret generic kubeconfigs \
-		--from-file=hub="$(HOME)/.kube/config" \
+		--from-file=hub="$(SPOKE_KC_DIR)/kubeconfig-$(KIND_HUB)-internal" \
 		$(foreach s,$(SPOKES),--from-file=$(s)="$(SPOKE_KC_DIR)/kubeconfig-$(s)-internal") \
-		--dry-run=client -o yaml | kubectl apply -f -
+		--dry-run=client -o yaml | kubectl --context kind-$(KIND_HUB) -n $(OBS_NS) apply -f -
 
 # ── Validate ─────────────────────────────────────────────────────────────────
 .PHONY: validate
@@ -551,18 +580,18 @@ grafana-url:
 	@echo "  $(GRAFANA_URL)/d/cluster-fitness       Cluster Fitness"
 	@echo "  $(GRAFANA_URL)/d/chainsaw-results       Chainsaw Test Results"
 	@echo "  $(GRAFANA_URL)/d/controller-deep-dive   Controller Deep Dive"
-	@echo "  $(GRAFANA_URL)/d/token-rotation         Token Rotation"
 
 # ── Clean ────────────────────────────────────────────────────────────────────
 .PHONY: clean clean-artifacts
 clean:
 	kind delete cluster --name $(KIND_HUB) 2>/dev/null || true
+	@for s in $(ROOK_SPOKES); do docker exec $$s-worker losetup -d $$(docker exec $$s-worker losetup -j $(CEPH_LOOP_IMG) | cut -d: -f1) 2>/dev/null || true; done
 	@for s in $(SPOKES); do kind delete cluster --name $$s 2>/dev/null || true; done
 	@for s in $(SPOKES); do rm -f $(SPOKE_KC_DIR)/kubeconfig-$$s-internal $(CHAINSAW_DIR)/kubeconfig-$$s-internal; done
 	rm -f $(CHAINSAW_DIR)/kubeconfig-hub $(CHAINSAW_DIR)/$(CHAINSAW_REPORT)
 
 clean-artifacts:
-	rm -rf $(OUT_DIR) coverage-root.out coverage-bc.out coverage-wo.out
+	rm -rf $(OUT_DIR) coverage-root.out coverage-vmbc.out coverage-bbc.out
 
 # ── Full loop ────────────────────────────────────────────────────────────────
 .PHONY: all
@@ -572,7 +601,7 @@ all: lint test build deploy validate
 # ── Install helpers ──────────────────────────────────────────────────────────
 .PHONY: install-chainsaw install-flux
 install-chainsaw:
-	go install github.com/kyverno/chainsaw@latest
+	go install github.com/kyverno/chainsaw@$(CHAINSAW_VERSION)
 
 install-flux:
 	curl -s https://fluxcd.io/install.sh | bash

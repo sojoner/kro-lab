@@ -1,0 +1,104 @@
+# E2E Test: Multi-Tenant Isolation
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: multi-tenant-isolation
+spec:
+  cluster: hub
+  description: >
+    Strict namespace isolation between tenants. acme-corp and globex-inc
+    buckets land as claims in separate namespaces on eu-storage; neither
+    tenant can see the other's claims or read the other's credentials; the
+    controller's metrics carry both tenants.
+  steps:
+  - name: order a bucket for each tenant
+    cluster: hub
+    try:
+    - apply:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: Bucket
+          metadata:
+            name: iso-acme
+            labels:
+              platform.example.com/tenant: acme-corp
+          spec:
+            regions: [eu]
+    - apply:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: Bucket
+          metadata:
+            name: iso-globex
+            labels:
+              platform.example.com/tenant: globex-inc
+          spec:
+            regions: [eu]
+  - name: each claim lands in its own tenant namespace
+    cluster: eu-storage
+    try:
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: objectbucket.io/v1alpha1
+          kind: ObjectBucketClaim
+          metadata:
+            name: iso-acme-eu
+            namespace: acme-corp
+          status:
+            phase: Bound
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: objectbucket.io/v1alpha1
+          kind: ObjectBucketClaim
+          metadata:
+            name: iso-globex-eu
+            namespace: globex-inc
+          status:
+            phase: Bound
+  - name: tenants cannot see each other
+    cluster: eu-storage
+    try:
+    - script:
+        timeout: 60s
+        content: |
+          set -u
+          ACME="--as=dex:carol@acme-corp.example.com --as-group=dex:acme-corp-analyst"
+          GLOBEX="--as=dex:frank@globex-inc.example.com --as-group=dex:globex-inc-analyst"
+          ACME_ADMIN="--as=dex:alice@acme-corp.example.com --as-group=dex:acme-corp-admin"
+          denied() { echo "$1" | grep -qiE "forbidden|denied|cannot"; }
+          fail=0
+          check() { # description, want (allow|deny), kubectl args...
+            desc=$1; want=$2; shift 2
+            out=$(kubectl "$@" 2>&1); rc=$?
+            if [ "$want" = deny ]; then
+              if [ $rc -ne 0 ] && denied "$out"; then echo "PASS: $desc"; else echo "FAIL: $desc (rc=$rc): $out"; fail=1; fi
+            else
+              if [ $rc -eq 0 ]; then echo "PASS: $desc"; else echo "FAIL: $desc (rc=$rc): $out"; fail=1; fi
+            fi
+          }
+          # own namespace works, so the denials below are not a broken setup
+          check "acme analyst reads own claim"        allow get objectbucketclaim iso-acme-eu -n acme-corp $ACME
+          check "globex analyst reads own claim"      allow get objectbucketclaim iso-globex-eu -n globex-inc $GLOBEX
+          check "acme admin reads own credentials"    allow get secret iso-acme-eu -n acme-corp $ACME_ADMIN
+          # across tenants nothing is visible
+          check "acme user denied globex claims"      deny  get objectbucketclaims -n globex-inc $ACME
+          check "globex user denied acme claims"      deny  get objectbucketclaims -n acme-corp $GLOBEX
+          check "acme user denied globex credentials" deny  get secret iso-globex-eu -n globex-inc $ACME_ADMIN
+          exit $fail
+  - name: metrics carry both tenants
+    cluster: hub
+    try:
+    - script:
+        timeout: 30s
+        content: |
+          METRICS=$(kubectl get --raw "/api/v1/namespaces/default/services/bucket-binding-controller:metrics/proxy/metrics")
+          for T in acme-corp globex-inc; do
+            if echo "$METRICS" | grep -q "bucket_binding_controller_reconcile_total{.*tenant_id=\"$T\""; then
+              echo "PASS: metrics carry tenant_id=$T"
+            else
+              echo "FAIL: metrics missing tenant_id=$T"
+              exit 1
+            fi
+          done
