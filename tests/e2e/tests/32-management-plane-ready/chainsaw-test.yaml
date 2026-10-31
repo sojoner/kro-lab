@@ -1,0 +1,132 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: management-plane-ready
+spec:
+  concurrent: false
+  description: >
+    The management plane is up. Measurement: the metrics-operator runs, every Metric it serves is
+    Ready, its service account reads intents but not Secrets or CRDs, and Prometheus scrapes it.
+    Portal: Headlamp runs and sends logins to Dex, which it reaches and trusts. Grafana has the
+    adoption dashboard.
+  steps:
+  - name: the metrics-operator is available
+    cluster: hub
+    try:
+    - assert:
+        timeout: 2m
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            namespace: monitoring
+            name: metrics-operator
+          status:
+            availableReplicas: 1
+
+  - name: every Metric is Ready
+    cluster: hub
+    try:
+    - script:
+        timeout: 2m
+        content: |
+          # 2 intent kinds x 2 series (created, ready)
+          WANT=4
+          for _ in $(seq 1 24); do
+            J=$(kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring get metrics.metrics.open-control-plane.io -o json)
+            TOTAL=$(echo "$J" | jq '.items | length')
+            READY=$(echo "$J" | jq '[.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | length')
+            if [ "$TOTAL" = "$WANT" ] && [ "$READY" = "$TOTAL" ]; then
+              echo "OK: $READY of $TOTAL Metrics are Ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "ERROR: $READY of $TOTAL Metrics are Ready, want $WANT"
+          exit 1
+
+  - name: the operator reads intents but not Secrets or CRDs
+    cluster: hub
+    try:
+    - script:
+        content: |
+          SA=system:serviceaccount:monitoring:metrics-operator
+          can() { kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" auth can-i "$@" --as="$SA" 2>/dev/null || true; }
+          [ "$(can list bucketintents.platform.example.com -A)" = yes ] || { echo "ERROR: the operator cannot list bucketintents"; exit 1; }
+          [ "$(can list vmsetintents.platform.example.com -A)" = yes ] || { echo "ERROR: the operator cannot list vmsetintents"; exit 1; }
+          for r in secrets customresourcedefinitions.apiextensions.k8s.io; do
+            [ "$(can get "$r" -A)" = no ] || { echo "ERROR: the operator can get $r"; exit 1; }
+          done
+          echo "OK: intents readable, Secrets and CRDs not"
+
+  - name: Prometheus scrapes the operator
+    cluster: hub
+    try:
+    - script:
+        timeout: 3m
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-kube-prometheus-stack-prometheus 19090:9090 >/dev/null 2>&1 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do curl -sf -o /dev/null http://localhost:19090/-/ready && break; sleep 1; done
+          for _ in $(seq 1 30); do
+            N=$(curl -s --get http://localhost:19090/api/v1/query \
+              --data-urlencode 'query=count(up{service="metrics-operator-metrics"} == 1)' | jq -r '.data.result[0].value[1] // "0"')
+            if [ "$N" = "1" ]; then echo "OK: Prometheus scrapes the metrics-operator"; exit 0; fi
+            sleep 5
+          done
+          echo "ERROR: Prometheus has no healthy metrics-operator target"
+          exit 1
+
+  - name: Headlamp is available
+    cluster: hub
+    try:
+    - assert:
+        timeout: 3m
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            namespace: monitoring
+            name: headlamp
+          status:
+            availableReplicas: 1
+
+  - name: Headlamp sends logins to Dex, which it reaches and trusts
+    cluster: hub
+    try:
+    - script:
+        timeout: 2m
+        content: |
+          HOST=$(kubectl -n monitoring get ingress headlamp -o jsonpath='{.spec.rules[0].host}')
+          [ -n "$HOST" ] || { echo "ERROR: the headlamp ingress has no host"; exit 1; }
+          kubectl -n monitoring port-forward svc/headlamp 19092:80 >/dev/null 2>&1 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do curl -sf -m 5 -o /dev/null http://localhost:19092/headlamp/ && break; sleep 1; done
+          # The redirect is only built after Headlamp has fetched Dex's discovery document over TLS.
+          LOC=$(curl -s -m 15 -o /dev/null -D - "http://localhost:19092/headlamp/oidc?cluster=hub" | awk 'tolower($1) == "location:" {print $2}' | tr -d '\r')
+          case "$LOC" in
+            "https://$HOST/dex/auth?"*client_id=kubernetes*code_challenge_method=S256*"redirect_uri=https%3A%2F%2F$HOST%2Fheadlamp%2Foidc-callback"*)
+              echo "OK: login goes to https://$HOST/dex with PKCE and returns to /headlamp/oidc-callback" ;;
+            *) echo "ERROR: unexpected login redirect: '$LOC'"; exit 1 ;;
+          esac
+
+  - name: Grafana has the adoption dashboard
+    cluster: hub
+    try:
+    - script:
+        timeout: 4m
+        content: |
+          kubectl -n monitoring port-forward svc/hub-grafana 19096:80 >/dev/null 2>&1 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do curl -sf -m 5 -o /dev/null http://admin:admin@localhost:19096/api/health && break; sleep 1; done
+          # Grafana's sidecar picks the ConfigMap up within about a minute.
+          for _ in $(seq 1 36); do
+            T=$(curl -s -m 10 http://admin:admin@localhost:19096/api/dashboards/uid/platform-adoption | jq -r '.dashboard.title // empty')
+            if [ -n "$T" ]; then echo "OK: Grafana has the dashboard '$T'"; exit 0; fi
+            sleep 5
+          done
+          echo "ERROR: Grafana has no dashboard with uid platform-adoption"
+          exit 1

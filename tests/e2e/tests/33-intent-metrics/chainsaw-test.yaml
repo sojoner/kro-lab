@@ -1,0 +1,107 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: intent-metrics
+spec:
+  concurrent: false
+  namespace: acme-corp
+  cluster: hub
+  description: >
+    Adoption and time to Ready reach Prometheus per tenant: both intents of a tenant are seen,
+    a provisioned bucket has a time to Ready, and an unschedulable one never gets a ready="True"
+    series. Timestamps have a resolution of one second, so a warm bucket can read 0; a series
+    of an earlier run reads negative, because its ready time precedes this run's creation. The operator keeps series of deleted intents until it restarts, so the
+    checks compare against this run's intents (their creationTimestamp), never against what
+    merely exists, or a rerun would pass on the previous run's series. The adoption dashboard shows
+    them: every panel's own query, read from Grafana, returns data.
+  steps:
+  - name: one provisioned and one unschedulable bucket
+    try:
+    - apply:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: metered
+          spec:
+            regions: [eu]
+            size: S
+    - apply:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: unmetered
+          spec:
+            regions: [us]
+            size: S
+    - assert:
+        timeout: 2m
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: metered
+          status:
+            state: ACTIVE
+
+  - name: Prometheus has the tenant's intents and the time to Ready
+    try:
+    - script:
+        timeout: 5m
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/hub-kube-prometheus-stack-prometheus 19091:9090 >/dev/null 2>&1 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do curl -sf -o /dev/null http://localhost:19091/-/ready && break; sleep 1; done
+          q() { curl -s --get http://localhost:19091/api/v1/query --data-urlencode "query=$1" | jq -r '.data.result[0].value[1] // empty'; }
+          # Re-run until the operator and the scrape have caught up (about two intervals).
+          eventually() { for _ in $(seq 1 48); do R=$(q "$1"); if [ -n "$R" ] && awk -v v="$R" "BEGIN{exit !(v $2)}"; then echo "OK: $3 ($R)"; return 0; fi; sleep 5; done; echo "ERROR: $3: last value '$R'"; exit 1; }
+
+          epoch() { date -u -d "$(kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n acme-corp get bucketintent "$1" -o jsonpath='{.metadata.creationTimestamp}')" +%s; }
+          SEL='tenant="acme-corp",resource="BucketIntent"'
+          for i in metered unmetered; do
+            eventually "platform_intent_created_timestamp_seconds{$SEL,name=\"$i\"}" "== $(epoch $i)" "the creation of $i is exported for acme-corp"
+          done
+          eventually "platform_intent_ready_timestamp_seconds{$SEL,name=\"metered\",ready=\"True\"} - on(resource,tenant,name) platform_intent_created_timestamp_seconds{$SEL,name=\"metered\"}" '>= 0 && v < 600' 'the provisioned bucket has a time to Ready of under 10 minutes'
+          # The unschedulable intent is seen as not ready, and never as ready.
+          eventually "count(platform_intent_ready_timestamp_seconds{$SEL,name=\"unmetered\",ready=\"False\"})" '== 1' 'the unschedulable bucket has a ready="False" series'
+          T=$(q "count(platform_intent_ready_timestamp_seconds{$SEL,name=\"unmetered\",ready=\"True\"})")
+          [ -z "$T" ] || { echo "ERROR: the unschedulable bucket has a ready=\"True\" series"; exit 1; }
+          echo "OK: no ready=\"True\" series for the unschedulable bucket"
+
+  - name: every panel of the adoption dashboard shows data
+    try:
+    - script:
+        timeout: 3m
+        content: |
+          kubectl -n monitoring port-forward svc/hub-grafana 19094:80 >/dev/null 2>&1 &
+          PF1=$!
+          kubectl -n monitoring port-forward svc/hub-kube-prometheus-stack-prometheus 19095:9090 >/dev/null 2>&1 &
+          PF2=$!
+          trap 'kill $PF1 $PF2 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do curl -sf -m 5 -o /dev/null http://admin:admin@localhost:19094/api/health && curl -sf -m 5 -o /dev/null http://localhost:19095/-/ready && break; sleep 1; done
+          # The queries come from the dashboard itself, so they cannot drift from what is checked here.
+          DASH=$(curl -s -m 10 http://admin:admin@localhost:19094/api/dashboards/uid/platform-adoption)
+          # printf, not echo: the text panel holds \\n inside a JSON string, which sh's echo would expand.
+          W=$(printf '%s' "$DASH" | jq -r '.dashboard.templating.list[] | select(.name == "window") | .current.value')
+          [ -n "$W" ] || { echo "ERROR: the dashboard has no window variable"; exit 1; }
+          PANELS=$(mktemp)
+          printf '%s' "$DASH" | jq -r '.dashboard.panels[] | select(.targets != null) | [.title, .targets[0].expr] | @tsv' > "$PANELS"
+          [ -s "$PANELS" ] || { echo "ERROR: the dashboard has no panels with a query"; exit 1; }
+          TAB=$(printf '\t')
+          while IFS="$TAB" read -r TITLE EXPR; do
+            Q=$(printf '%s' "$EXPR" | sed "s/\\\$window/$W/g")
+            V=$(curl -s -m 15 --get http://localhost:19095/api/v1/query --data-urlencode "query=$Q" | jq -r '.data.result[0].value[1] // empty')
+            [ -n "$V" ] || { echo "ERROR: the panel '$TITLE' has no data (query: $Q)"; exit 1; }
+            echo "OK: the panel '$TITLE' has data ($V)"
+            case "$TITLE" in
+              "Active tenants") awk -v v="$V" 'BEGIN{exit !(v >= 1)}' || { echo "ERROR: no active tenant"; exit 1; } ;;
+              "Intents created") awk -v v="$V" 'BEGIN{exit !(v >= 2)}' || { echo "ERROR: fewer intents than this test created"; exit 1; } ;;
+              # A duration is never negative: a recreated intent leaves the ready series of its predecessor
+              # behind, which reads as ready before created until the new one is ready.
+              *Ready*) awk -v v="$V" 'BEGIN{exit !(v >= 0)}' || { echo "ERROR: the panel '$TITLE' shows a negative duration ($V)"; exit 1; } ;;
+            esac
+          done < "$PANELS"

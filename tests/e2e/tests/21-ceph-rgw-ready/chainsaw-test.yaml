@@ -1,0 +1,38 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ceph-rgw-ready
+spec:
+  concurrent: false
+  description: "eu-storage runs Ceph with a RADOS Gateway and offers the bucket StorageClass"
+  steps:
+  - name: Ceph and the RADOS Gateway are Ready
+    try:
+    - assert:
+        resource:
+          apiVersion: ceph.rook.io/v1
+          kind: CephCluster
+          metadata:
+            name: rook-ceph
+            namespace: rook-ceph
+          status:
+            phase: Ready
+        timeout: 60s
+    - assert:
+        resource:
+          apiVersion: ceph.rook.io/v1
+          kind: CephObjectStore
+          metadata:
+            name: s3
+            namespace: rook-ceph
+          status:
+            phase: Ready
+        timeout: 60s
+    - assert:
+        resource:
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: ceph-bucket
+          provisioner: rook-ceph.ceph.rook.io/bucket
+    cluster: eu-storage

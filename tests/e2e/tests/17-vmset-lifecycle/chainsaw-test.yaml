@@ -1,0 +1,232 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: vmset-lifecycle
+spec:
+  concurrent: false
+  namespace: acme-corp
+  cluster: hub
+  description: >
+    One VmSet in two regions becomes running VMs on eu and on us with the
+    cloud-init Secret copied to both, status of both flows back to the hub,
+    replicas scale down highest index first in each region, and deleting the
+    VmSet removes everything from both spokes.
+  steps:
+  - name: create two VMs in each of eu and us
+    try:
+    - apply:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: VmSetIntent
+          metadata:
+            name: life
+          spec:
+            regions: [eu, us]
+            size: S
+            replicas: 2
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl demo@example"
+  - name: VMs and Secret run on eu
+    cluster: eu
+    try:
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: kubevirt.io/v1
+          kind: VirtualMachine
+          metadata:
+            name: life-eu-0
+            namespace: acme-corp
+            labels:
+              platform.example.com/tenant: acme-corp
+          status:
+            ready: true
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: kubevirt.io/v1
+          kind: VirtualMachine
+          metadata:
+            name: life-eu-1
+            namespace: acme-corp
+          status:
+            ready: true
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: life-cloudinit
+            namespace: acme-corp
+  - name: VMs and Secret run on us
+    cluster: us
+    try:
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: kubevirt.io/v1
+          kind: VirtualMachine
+          metadata:
+            name: life-us-0
+            namespace: acme-corp
+            labels:
+              platform.example.com/tenant: acme-corp
+          status:
+            ready: true
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: kubevirt.io/v1
+          kind: VirtualMachine
+          metadata:
+            name: life-us-1
+            namespace: acme-corp
+          status:
+            ready: true
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: life-cloudinit
+            namespace: acme-corp
+  - name: status of both regions flows back to the hub
+    try:
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalVmSetRequest
+          metadata:
+            name: life-eu
+          status:
+            regions:
+            - region: eu
+              phase: Ready
+              readyReplicas: 2
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalVmSetRequest
+          metadata:
+            name: life-us
+          status:
+            regions:
+            - region: us
+              phase: Ready
+              readyReplicas: 2
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: VmSetIntent
+          metadata:
+            name: life
+          status:
+            state: ACTIVE
+            (conditions[?type == 'Ready']):
+            - status: 'True'
+            # Filters, not functions: on a missing status they give null and the assert retries.
+            (regions[?regions[0].region == 'eu'].regions[0].phase): [Ready]
+            (regions[?regions[0].region == 'us'].regions[0].phase): [Ready]
+  - name: scale down removes the highest index in each region
+    try:
+    - patch:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: VmSetIntent
+          metadata:
+            name: life
+          spec:
+            replicas: 1
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalVmSetRequest
+          metadata:
+            name: life-eu
+          status:
+            regions:
+            - phase: Ready
+              readyReplicas: 1
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalVmSetRequest
+          metadata:
+            name: life-us
+          status:
+            regions:
+            - phase: Ready
+              readyReplicas: 1
+  - name: life-eu-1 is gone from eu
+    cluster: eu
+    try:
+    - error:
+        timeout: 120s
+        resource:
+          apiVersion: kubevirt.io/v1
+          kind: VirtualMachine
+          metadata:
+            name: life-eu-1
+            namespace: acme-corp
+    - assert:
+        resource:
+          apiVersion: kubevirt.io/v1
+          kind: VirtualMachine
+          metadata:
+            name: life-eu-0
+            namespace: acme-corp
+  - name: life-us-1 is gone from us
+    cluster: us
+    try:
+    - error:
+        timeout: 120s
+        resource:
+          apiVersion: kubevirt.io/v1
+          kind: VirtualMachine
+          metadata:
+            name: life-us-1
+            namespace: acme-corp
+    - assert:
+        resource:
+          apiVersion: kubevirt.io/v1
+          kind: VirtualMachine
+          metadata:
+            name: life-us-0
+            namespace: acme-corp
+  - name: delete the VmSet
+    try:
+    - delete:
+        cluster: hub-acme-corp
+        ref:
+          apiVersion: platform.example.com/v1alpha1
+          kind: VmSetIntent
+          name: life
+  - name: eu is cleaned up
+    cluster: eu
+    try: &cleaned-up
+    - error:
+        timeout: 120s
+        resource:
+          apiVersion: kubevirt.io/v1
+          kind: VirtualMachine
+          metadata:
+            namespace: acme-corp
+            labels:
+              platform.example.com/vmset: life
+    - error:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: life-cloudinit
+            namespace: acme-corp
+  - name: us is cleaned up
+    cluster: us
+    try: *cleaned-up

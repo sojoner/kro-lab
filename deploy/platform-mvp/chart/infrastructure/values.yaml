@@ -9,34 +9,38 @@ cert-manager:
 dex:
   enabled: true
   namespace: monitoring
-  issuer: "https://bm4080.taildf7067.ts.net/dex"
+  # Empty = https://<ingress.host>/dex. The issuer is stamped into every token and must be the URL
+  # the API servers' AuthenticationConfiguration trusts, so it is never the in-cluster Service URL.
+  issuer: ""
   image:
     repository: ghcr.io/dexidp/dex
-    tag: v2.42.0
+    tag: v2.46.1
     pullPolicy: IfNotPresent
   resources:
     requests: { cpu: 20m, memory: 64Mi }
     limits: { cpu: 100m, memory: 128Mi }
-  # infrastructureClients: Dex clients for service identities. Still used by
-  # bindingController's dex-auth-plugin sidecar (chart/hub-services) — do not
-  # remove even though token-rotator (the original consumer) is gone.
-  infrastructureClients:
-    - id: us-spoke-controller
-      name: US Spoke Controller (Infrastructure)
-      secret: us-spoke-controller-secret-demo
-    - id: eu-spoke-controller
-      name: EU Spoke Controller (Infrastructure)
-      secret: eu-spoke-controller-secret-demo
-    - id: asia-spoke-controller
-      name: Asia Spoke Controller (Infrastructure)
-      secret: asia-spoke-controller-secret-demo
-  tenantClients:
-    - id: acme-corp-us-controller
-      name: ACME Corp US Controller
-      secret: acme-corp-us-secret-demo
-    - id: globex-inc-us-controller
-      name: Globex Inc US Controller
-      secret: globex-inc-us-secret-demo
+  # Lifetime of issued ID tokens (Dex default is 24h). Clients re-authenticate or refresh.
+  expiry:
+    idTokens: 15m
+  # The one public client, for the portal and kubectl alike. Its id is the audience every API server
+  # expects (spoke chart authConfiguration.dexIssuer.audiences). Dex accepts only the redirects listed:
+  # redirectPaths are appended to https://<ingress.host> (the portal's callback), redirectURIs are
+  # kubectl oidc-login's local listeners and its keyboard flow (out of band).
+  kubernetesClient:
+    id: kubernetes
+    name: Kubernetes
+    redirectPaths: [/headlamp/oidc-callback]
+    redirectURIs: [http://localhost:8000, http://localhost:18000, urn:ietf:wg:oauth:2.0:oob]
+  # The connector that answers the password grant (tests, scripts): the static users below.
+  passwordConnector: local
+  # Secret holding the CA of each workload issuer, one key per caKey (made by `make ensure-dex-upstream-ca`).
+  upstreamCaSecret: dex-upstream-ca
+  # Clusters whose service-account tokens may be exchanged for Dex tokens (RFC 8693).
+  workloadConnectors:
+    - id: us-workloads
+      name: us workloads
+      issuer: https://us-control-plane:6443
+      caKey: us.crt
   connectors: []
   # Example multi-IDP connectors:
   # connectors:
@@ -58,6 +62,22 @@ dex:
 
 cronjob:
   schedule: "*/2 * * * *"
+  # Test directories (tests/e2e/tests/<name>) the in-cluster runner executes. Only tests
+  # that need nothing beyond the hub and us belong here; the full suite is `make validate`.
+  # Every name must exist: `make check-runner-tests` (part of `make lint`) enforces it.
+  tests:
+    - 01-hub-cluster-ready
+    - 02-us-cluster-ready
+    - 05-fleet-registration
+    - 06-observability-stack
+    - 07-ingress-log-shipping
+    - 08-dashboard-metrics
+    - 10-chainsaw-cronjob
+    - 11-oidc-trust
+    - 12-auth-configuration
+    - 13-projected-sa-tokens
+    - 14-platform-admin-access
+    - 32-management-plane-ready
 
 kube-prometheus-stack:
   enabled: true
@@ -187,6 +207,16 @@ loki:
       enabled: false
   test:
     enabled: false
+
+# Kubernetes events to Loki (templates/event-exporter.yaml).
+eventExporter:
+  # Events older than this when the exporter handles them are dropped (its default is 5).
+  maxEventAgeSeconds: 60
+  # Skip reading each event's object: the layout uses only fields of the event itself, and the
+  # lookup needs read rights on every kind, Secrets included.
+  omitLookup: true
+  streamLabels:
+    job: kubernetes-events
 
 promtail:
   enabled: true

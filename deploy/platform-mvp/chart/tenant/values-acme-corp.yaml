@@ -1,0 +1,5 @@
+tenant: acme-corp
+buckets:
+  - { name: photos, regions: [eu], size: S }
+vmSets:
+  - { name: web, regions: [eu, us], size: S, replicas: 2 }

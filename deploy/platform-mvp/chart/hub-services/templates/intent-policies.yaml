@@ -1,0 +1,69 @@
+{{- /* Admission for intents. It decides who counts as a tenant principal of the namespace;
+       RBAC (tenant-namespaces.yaml) then decides what they may do. Nobody else is exempt,
+       including system:masters and the platform admin. */}}
+{{- $wi := .Values.workloadIdentity }}
+{{- $prefix := required "workloadIdentity.userPrefix (deploy/platform-mvp/tenants.yaml)" $wi.userPrefix }}
+{{- $suffixes := list }}
+{{- range $role, $spec := .Values.tenancy.intentRoles }}{{ $suffixes = concat $suffixes $spec.groupSuffixes }}{{ end }}
+{{- $workloadUser := printf "%s%s:system:serviceaccount:" $prefix (required "workloadIdentity.connectorId" $wi.connectorId) }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: intent-in-tenant-namespace
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["platform.example.com"]
+        apiVersions: ["*"]
+        operations: ["CREATE"]
+        resources: ["bucketintents", "vmsetintents"]
+  validations:
+    - expression: {{ printf "namespaceObject.metadata.?labels[?'%s'].orValue('') == 'true'" .Values.tenancy.namespaceLabel | quote }}
+      messageExpression: {{ printf "'namespace ' + namespaceObject.metadata.name + ' is not a tenant account (label %s)'" .Values.tenancy.namespaceLabel | quote }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: intent-in-tenant-namespace
+spec:
+  policyName: intent-in-tenant-namespace
+  validationActions: ["Deny"]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: intent-by-tenant-principal
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["platform.example.com"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["bucketintents", "vmsetintents"]
+  # A change that leaves the spec alone (finalizers, labels, status) is what Kro itself makes.
+  matchConditions:
+    - name: spec-or-lifecycle-change
+      expression: "request.operation != 'UPDATE' || object.spec != oldObject.spec"
+  variables:
+    - name: tenant
+      expression: "request.namespace"
+    - name: user
+      expression: "request.userInfo.username"
+    - name: groups
+      expression: "request.userInfo.?groups.orValue([])"
+  validations:
+    - expression: >-
+        variables.user == {{ $workloadUser | quote }} + variables.tenant + {{ printf ":%s" (required "workloadIdentity.serviceAccount" $wi.serviceAccount) | quote }}
+        || variables.groups.exists(g, {{ $suffixes | toJson }}.exists(s, g == {{ $prefix | quote }} + variables.tenant + '-' + s))
+        || (request.operation == 'DELETE' && variables.user == {{ .Values.tenancy.offboardingUser | quote }})
+      messageExpression: "'only the tenant principals of ' + variables.tenant + ' may change its intents'"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: intent-by-tenant-principal
+spec:
+  policyName: intent-by-tenant-principal
+  validationActions: ["Deny"]

@@ -1,0 +1,508 @@
+{
+  "uid": "platform-adoption",
+  "title": "Platform adoption",
+  "tags": [
+    "platform-mvp",
+    "management-plane"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "templating": {
+    "list": [
+      {
+        "name": "window",
+        "label": "Window",
+        "type": "custom",
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "query": "1 day : 86400,7 days : 604800,30 days : 2592000",
+        "current": {
+          "selected": true,
+          "text": "7 days",
+          "value": "604800"
+        },
+        "options": [
+          {
+            "selected": false,
+            "text": "1 day",
+            "value": "86400"
+          },
+          {
+            "selected": true,
+            "text": "7 days",
+            "value": "604800"
+          },
+          {
+            "selected": false,
+            "text": "30 days",
+            "value": "2592000"
+          }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active tenants",
+      "description": "Tenants that created at least one intent in the window.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3987e5"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3987e5",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "textMode": "auto",
+        "text": {
+          "valueSize": 64
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count(count by (tenant) (platform_intent_created_timestamp_seconds > time() - $window))",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Intents created",
+      "description": "Intents created in the window, deleted ones included.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3987e5"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3987e5",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "textMode": "auto",
+        "text": {
+          "valueSize": 40
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count(platform_intent_created_timestamp_seconds > time() - $window)",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Median time to Ready",
+      "description": "Seconds from creation until the Ready condition last turned True, for intents created in the window. One-second resolution: a warm bucket reads 0 or 1.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "noValue": "no intent ready yet",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3987e5"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3987e5",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "textMode": "auto",
+        "text": {
+          "valueSize": 40
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "quantile(0.5, ((platform_intent_ready_timestamp_seconds{ready=\"True\"} - on(resource, tenant, name) platform_intent_created_timestamp_seconds) >= 0) and on(resource, tenant, name) (platform_intent_created_timestamp_seconds > time() - $window))",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "bargauge",
+      "title": "Intents created per tenant",
+      "description": "One bar per tenant, intents of both kinds, created in the window.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "decimals": 0,
+          "noValue": "no intents in the window",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3987e5"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "valueMode": "color",
+        "namePlacement": "left",
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "sizing": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count by (tenant) (platform_intent_created_timestamp_seconds > time() - $window)",
+          "refId": "A",
+          "instant": true,
+          "legendFormat": "{{tenant}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Median time to Ready by kind",
+      "description": "Median over the intents created in the window, per kind. It moves when an intent becomes ready.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "BucketIntent"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3987e5"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "VmSetIntent"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d95926"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "quantile by (resource) (0.5, ((platform_intent_ready_timestamp_seconds{ready=\"True\"} - on(resource, tenant, name) platform_intent_created_timestamp_seconds) >= 0) and on(resource, tenant, name) (platform_intent_created_timestamp_seconds > time() - $window))",
+          "refId": "A",
+          "instant": false,
+          "legendFormat": "{{resource}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Slowest intents to become Ready",
+      "description": "The ten slowest intents created in the window.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 0,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Seconds"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Seconds",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "cluster": true,
+              "group": true,
+              "version": true,
+              "namespace": true,
+              "job": true,
+              "instance": true,
+              "service": true,
+              "container": true,
+              "endpoint": true,
+              "pod": true,
+              "ready": true,
+              "exported_namespace": true,
+              "prometheus": true
+            },
+            "indexByName": {
+              "tenant": 0,
+              "resource": 1,
+              "name": 2,
+              "Value": 3
+            },
+            "renameByName": {
+              "tenant": "Tenant",
+              "resource": "Kind",
+              "name": "Intent",
+              "Value": "Seconds"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "topk(10, ((platform_intent_ready_timestamp_seconds{ready=\"True\"} - on(resource, tenant, name) platform_intent_created_timestamp_seconds) >= 0) and on(resource, tenant, name) (platform_intent_created_timestamp_seconds > time() - $window))",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "text",
+      "title": "How to read this",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 15
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Adoption** counts the intents *created* in the window, deleted ones included, and never what exists now: the metrics-operator keeps a series until it restarts, so a count of live objects would be wrong.\n\nAn intent recreated under the same name counts once. **Time to Ready** is when an intent's `Ready` condition last turned `True` minus its creation, in whole seconds; a ready time before the creation belongs to an earlier incarnation of the same name and is ignored. Ready means every region is usable, so an unschedulable region keeps an intent from being Ready.\n\nA **tenant** is the namespace of the intent. Only the platform team sees this dashboard; tenants see their own intents in the portal."
+      }
+    }
+  ]
+}

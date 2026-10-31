@@ -1,0 +1,67 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: tenant-chart-access
+spec:
+  concurrent: false
+  cluster: eu-storage
+  description: >
+    A tenant orders with its chart and proves access, with its own kubectl login only. Dave renders
+    globex-inc's chart (chart/tenant, values-globex-inc.yaml) with a fresh SSH key, applies it on the
+    hub, waits until every intent is Ready, logs in to his VM in each region (eu and us) over ssh
+    (through virtctl port-forward; the CirrOS guest takes RSA keys and signs with ssh-rsa only) and
+    writes and reads an object in his bucket with curl (SigV4) through the storage spoke's public S3
+    port. Then he deletes what he ordered. Needs kubelogin and virtctl on the PATH
+    (make install-kubelogin install-virtctl).
+  steps:
+  - name: dave orders with his chart, then reaches his VMs over ssh and his bucket with curl
+    try:
+    - script:
+        timeout: 10m
+        content: |
+          set -u
+          ROOT=$(git rev-parse --show-toplevel)
+          CHART=$ROOT/deploy/platform-mvp/chart/tenant
+          SRC=$ROOT/hack/platform-mvp/kubeconfig-globex-inc
+          for b in kubelogin virtctl; do command -v $b >/dev/null || { echo "ERROR: $b is not on the PATH"; exit 1; }; done
+          # The public S3 port of the storage spoke, read as the cluster admin of this step.
+          PORT=$(kubectl -n rook-ceph get svc rook-ceph-rgw-s3-public -o jsonpath='{.spec.ports[0].nodePort}')
+          [ -n "$PORT" ] || { echo "ERROR: no public S3 service on eu-storage"; exit 1; }
+          W=$(mktemp -d)
+          kubectl config view --raw --kubeconfig "$SRC" -o json | jq --arg c "$W/cache" \
+            '.users[].user.exec.args |= (map(select(test("^--(grant-type|token-cache-dir)") | not))
+               + ["--grant-type=password", "--username=dave@globex-inc.example.com", "--password=password", "--token-cache-dir=" + $c])' > "$W/config"
+          K="kubectl --kubeconfig $W/config"
+          ssh-keygen -q -t rsa -b 3072 -N '' -C dave@globex-inc -f "$W/id"
+          RENDER="helm template globex-inc $CHART -f $CHART/values-globex-inc.yaml --set-file sshPublicKey=$W/id.pub"
+          cleanup() { $RENDER | $K --context hub delete -f - --ignore-not-found --wait=true --timeout=3m >/dev/null 2>&1; rm -rf "$W"; }
+          trap cleanup EXIT
+          $RENDER | $K --context hub apply -f - || { echo "ERROR: dave could not apply his chart"; exit 1; }
+          NAMES=$($RENDER | $K --context hub get -f - -o name) || exit 1
+          for N in $NAMES; do $K --context hub wait "$N" --for=condition=Ready --timeout=6m || { echo "ERROR: $N is not Ready"; exit 1; }; done
+          echo "OK: every intent of dave's chart is Ready:" $NAMES
+          # ssh into the first VM of the first VM set in each of its regions, with the key from the chart. A VM
+          # region's cluster is named like the region. virtctl ssh drops the kubeconfig and context in its
+          # proxy command, so ssh gets the proxy command directly.
+          VMS=$($RENDER | python3 -I -c 'import sys, yaml; d = [o for o in yaml.safe_load_all(sys.stdin) if o and o["kind"] == "VmSetIntent"][0]; print(" ".join("%s:%s-%s-0/%s" % (r, d["metadata"]["name"], r, d["metadata"]["namespace"]) for r in d["spec"]["regions"]))')
+          SSH="ssh -i $W/id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa"
+          for RVM in $VMS; do
+            R=${RVM%%:*}; VM=${RVM#*:}
+            PROXY="virtctl --kubeconfig $W/config --context $R port-forward --stdio=true vmi/$VM 22"
+            for i in $(seq 30); do
+              OUT=$($SSH -o "ProxyCommand=$PROXY" "cirros@${VM%/*}" 'echo platform-ssh-ok' 2>&1) && echo "$OUT" | grep -q platform-ssh-ok && break
+              sleep 5
+            done
+            echo "$OUT" | grep -q platform-ssh-ok && echo "OK: dave logs in to ${VM%/*} in $R over ssh" || { echo "ERROR: ssh to $VM in $R failed: $OUT"; exit 1; }
+          done
+          # curl the first bucket in its first region with the claim's own credentials.
+          B=$($RENDER | python3 -I -c 'import sys, yaml; d = [o for o in yaml.safe_load_all(sys.stdin) if o and o["kind"] == "BucketIntent"][0]; print("%s-%s" % (d["metadata"]["name"], d["spec"]["regions"][0]))')
+          AK=$($K --context eu-storage get secret "$B" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)
+          SK=$($K --context eu-storage get secret "$B" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)
+          BUCKET=$($K --context eu-storage get configmap "$B" -o jsonpath='{.data.BUCKET_NAME}')
+          [ -n "$AK" ] && [ -n "$SK" ] && [ -n "$BUCKET" ] || { echo "ERROR: dave cannot read the credentials of $B"; exit 1; }
+          S3="curl -sf --aws-sigv4 aws:amz:us-east-1:s3 --user $AK:$SK"
+          echo "hello from dave" > "$W/in"
+          $S3 -T "$W/in" "http://localhost:$PORT/$BUCKET/hello.txt" >/dev/null || { echo "ERROR: curl could not write to $BUCKET"; exit 1; }
+          $S3 -o "$W/out" "http://localhost:$PORT/$BUCKET/hello.txt" && cmp -s "$W/in" "$W/out" || { echo "ERROR: curl did not read back what it wrote"; exit 1; }
+          echo "OK: dave writes and reads an object in $BUCKET with curl on port $PORT"

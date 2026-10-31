@@ -1,0 +1,61 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: eu-storage-cluster-ready
+spec:
+  concurrent: false
+  description: "eu-storage spoke is up; every spoke is registered with a region label and eu-storage offers object storage"
+  steps:
+  - name: eu-storage has nodes
+    try:
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Node
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    cluster: eu-storage
+  - name: every spoke has a region label
+    try:
+    - assert:
+        resource:
+          apiVersion: multicluster.x-k8s.io/v1alpha1
+          kind: ClusterProfile
+          metadata:
+            name: us
+            namespace: default
+            labels:
+              platform.example.com/region: us
+        timeout: 30s
+    - assert:
+        resource:
+          apiVersion: multicluster.x-k8s.io/v1alpha1
+          kind: ClusterProfile
+          metadata:
+            name: eu
+            namespace: default
+            labels:
+              platform.example.com/region: eu
+              platform.example.com/offers-vms: "true"
+        timeout: 30s
+    - assert:
+        resource:
+          apiVersion: multicluster.x-k8s.io/v1alpha1
+          kind: ClusterProfile
+          metadata:
+            name: eu-storage
+            namespace: default
+            labels:
+              platform.example.com/region: eu
+              platform.example.com/offers-object-storage: "true"
+        timeout: 30s
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: eu-storage-kubeconfig
+            namespace: default
+        timeout: 30s
+    cluster: hub

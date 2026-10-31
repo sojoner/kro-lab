@@ -19,5 +19,14 @@ spec:
   clusters:
     hub:
       kubeconfig: ./kubeconfig-hub
+    # The hub as each tenant's workload identity (made by `make chainsaw-kubeconfigs`).
+    hub-acme-corp:
+      kubeconfig: ./kubeconfig-hub-acme-corp
+    hub-globex-inc:
+      kubeconfig: ./kubeconfig-hub-globex-inc
     us:
       kubeconfig: ./kubeconfig-us-internal
+    eu:
+      kubeconfig: ./kubeconfig-eu-internal
+    eu-storage:
+      kubeconfig: ./kubeconfig-eu-storage-internal

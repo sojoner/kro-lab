@@ -1,0 +1,39 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: eu-cluster-ready
+spec:
+  concurrent: false
+  description: "eu spoke is up and registered on the hub as a VM-capable cluster"
+  steps:
+  - name: eu has nodes
+    try:
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Node
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    cluster: eu
+  - name: eu is registered on the hub as VM-capable
+    try:
+    - assert:
+        resource:
+          apiVersion: multicluster.x-k8s.io/v1alpha1
+          kind: ClusterProfile
+          metadata:
+            name: eu
+            namespace: default
+            labels:
+              platform.example.com/offers-vms: "true"
+        timeout: 30s
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: eu-kubeconfig
+            namespace: default
+        timeout: 30s
+    cluster: hub

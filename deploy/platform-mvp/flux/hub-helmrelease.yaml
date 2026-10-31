@@ -8,6 +8,10 @@ metadata:
 spec:
   interval: 1m
   timeout: 5m
+  # The release make deploy installs: name and namespace must match, or Flux builds a second one.
+  releaseName: crds
+  targetNamespace: default
+  storageNamespace: default
   chart:
     spec:
       chart: ./deploy/platform-mvp/chart/crds
@@ -26,12 +30,18 @@ metadata:
 spec:
   interval: 1m
   timeout: 15m
+  releaseName: hub   # what make deploy installs; the hub-grafana, hub-cert-manager ... names derive from it
   dependsOn:
     - name: crds
       namespace: flux-system
   chart:
     spec:
       chart: ./deploy/platform-mvp/chart/infrastructure
+      # make deploy installs the lab with the chart's e2e values; so does Flux, or it would change the lab.
+      # source-controller resolves these from the repository root, not from the chart directory.
+      valuesFiles:
+        - deploy/platform-mvp/chart/infrastructure/values.yaml
+        - deploy/platform-mvp/chart/infrastructure/e2e-values.yaml
       sourceRef:
         kind: GitRepository
         name: platform
@@ -41,10 +51,6 @@ spec:
     ingress:
       enabled: true
       host: ${ingress_host}
-    promtail:
-      enabled: false
-    dex:
-      issuer: "http://dex.monitoring.svc.cluster.local:5556/dex"
 ---
 # Wave 3: Hub services (depends on infrastructure)
 apiVersion: helm.toolkit.fluxcd.io/v2
@@ -63,14 +69,51 @@ spec:
   chart:
     spec:
       chart: ./deploy/platform-mvp/chart/hub-services
+      valuesFiles:
+        - deploy/platform-mvp/chart/hub-services/values.yaml
+        - deploy/platform-mvp/chart/hub-services/e2e-values.yaml
+      sourceRef:
+        kind: GitRepository
+        name: platform
+        namespace: flux-system
+      interval: 1m
+  # Copy of deploy/platform-mvp/tenants.yaml (kept identical by `make check-tenants`).
+  values:
+    tenants:
+      - id: acme-corp
+        dexGroups: ["acme-corp-admin", "acme-corp-developer", "acme-corp-analyst"]
+      - id: globex-inc
+        dexGroups: ["globex-inc-admin", "globex-inc-developer", "globex-inc-analyst"]
+    workloadIdentity:
+      serviceAccount: platform-provisioner
+      connectorId: us-workloads
+      userPrefix: "dex:"
+---
+# Management plane (depends on hub-services): portal and adoption measurement. It lives in the
+# namespace of the observability stack because the portal trusts Dex's certificate from the secret there.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: management-plane
+  namespace: monitoring
+spec:
+  interval: 1m
+  timeout: 10m
+  dependsOn:
+    - name: hub-services
+      namespace: default
+    - name: infrastructure
+      namespace: monitoring
+    - name: crds
+      namespace: flux-system
+  chart:
+    spec:
+      chart: ./deploy/platform-mvp/chart/management-plane
       sourceRef:
         kind: GitRepository
         name: platform
         namespace: flux-system
       interval: 1m
   values:
-    dex:
-      issuer: "http://dex.monitoring.svc.cluster.local:5556/dex"
-    bindingController:
-      dex:
-        enabled: true
+    ingress:
+      host: ${ingress_host}

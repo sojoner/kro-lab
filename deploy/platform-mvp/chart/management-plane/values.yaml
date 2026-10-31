@@ -1,0 +1,117 @@
+# Management plane — released into the namespace of the observability stack (see the infrastructure
+# chart), after hub-services: it measures the intents Kro serves there and gives tenants a portal.
+
+# The portal is served by the ingress controller of the infrastructure chart, on the host of Dex.
+ingress:
+  host: ""          # required; make deploy-management-plane sets INGRESS_HOST
+  path: /headlamp   # = headlamp.config.baseURL
+
+# How the portal logs people in. The client id is a Dex client of the infrastructure chart
+# (dex.extraClients) and the audience the hub trusts (kind/hub-auth-values.yaml); the lint check
+# check-portal-trust keeps these in step. The issuer and callback URLs are built from ingress.host.
+portal:
+  oidc:
+    clientID: kubernetes             # Dex's one client (infrastructure dex.kubernetesClient), as for kubectl
+    scopes: "profile email groups"   # Headlamp adds openid itself
+    issuerPath: /dex
+    secretName: headlamp-oidc        # = headlamp.config.oidc.externalSecret.name
+
+# What the metrics-operator measures: one pair of Metrics per target, and the ClusterRole that lets
+# the operator read exactly these kinds. A tenant is the namespace of an intent.
+measurement:
+  # How often the operator re-reads the intents; Prometheus scrapes the result (serviceMonitor).
+  interval: 30s
+  # The intent condition whose last transition is the moment the intent became usable
+  # (hub-services: Kro sets it Ready only when every region is ready).
+  readyCondition: Ready
+  # The operator keeps a series until it restarts, so these are timestamps, never counts of what exists.
+  series:
+    created: platform_intent_created_timestamp_seconds
+    ready: platform_intent_ready_timestamp_seconds
+  targets:
+    - { kind: BucketIntent, group: platform.example.com, version: v1alpha1, resource: bucketintents }
+    - { kind: VmSetIntent, group: platform.example.com, version: v1alpha1, resource: vmsetintents }
+
+serviceMonitor:
+  interval: 30s
+
+metrics-operator:
+  enabled: true
+  # Fixes the ServiceAccount and Service names that the ClusterRoleBinding and ServiceMonitor use.
+  fullnameOverride: metrics-operator
+  # The CRDs are installed by the crds chart (wave 1), so the operator needs neither its init
+  # container nor the right to manage CRDs.
+  init:
+    enabled: false
+  crds:
+    manage: false
+  # The chart's own role reads */* (every Secret) and manages CRDs; measurement-rbac.yaml replaces it.
+  rbac:
+    create: false
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { memory: 256Mi }
+
+headlamp:
+  enabled: true
+  fullnameOverride: headlamp
+  service:
+    port: 80
+  config:
+    inCluster: true
+    inClusterContextName: hub
+    # The spokes (see env below); the file may be missing, then the portal shows the hub only.
+    extraArgs: ["-kubeconfig=/etc/headlamp-clusters/kubeconfig"]
+    baseURL: /headlamp
+    # Without it the plugin installed by the sidecar after startup is not listed.
+    watchPlugins: true
+    oidc:
+      secret:
+        create: false
+      externalSecret:
+        enabled: true
+        name: headlamp-oidc
+        hasScopes: true
+      # These two only switch the flags on; the callback URL itself comes from the Secret, which
+      # builds it from ingress.host (portal-oidc.yaml). Leave them non-empty.
+      callbackURL: from-secret
+      usePKCE: true
+  # Every call carries the caller's own token, so tenants see what RBAC lets them see: the portal's
+  # own service account gets no rights.
+  clusterRoleBinding:
+    create: false
+  # Dex's certificate is self-signed: trust the one the ingress serves (only its public part).
+  # Drop this where Dex has a certificate from a public CA.
+  # The portal shows every cluster: the hub is its in-cluster context, the spokes come from a
+  # kubeconfig (Secret headlamp-clusters, written by `make ensure-portal-clusters`) in which each
+  # spoke logs in through Dex. Each cluster is a login of its own; RBAC on it decides.
+  env:
+    - { name: SSL_CERT_FILE, value: /etc/headlamp-ca/ca.crt }
+  volumes:
+    - name: ingress-ca
+      secret:
+        secretName: ingress-tls
+        items:
+          - { key: ca.crt, path: ca.crt }
+    - name: clusters
+      secret:
+        secretName: headlamp-clusters
+        optional: true
+  volumeMounts:
+    - { name: ingress-ca, mountPath: /etc/headlamp-ca, readOnly: true }
+    - { name: clusters, mountPath: /etc/headlamp-clusters, readOnly: true }
+  livenessProbe:
+    httpGet: { path: /headlamp/ }
+  readinessProbe:
+    httpGet: { path: /headlamp/ }
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { memory: 256Mi }
+  # Kro's plugin, installed from the network by a sidecar when the pod starts.
+  pluginsManager:
+    enabled: true
+    configContent: |
+      plugins:
+        - name: headlamp_kro
+          source: https://artifacthub.io/packages/headlamp/headlamp-plugins/headlamp_kro
+          version: "0.1.0-alpha"

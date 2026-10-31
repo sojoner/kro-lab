@@ -1,0 +1,100 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: oidc-trust
+spec:
+  concurrent: false
+  description: >
+    Dex on the hub is a usable OIDC issuer for the API servers: its issuer is the
+    https ingress URL the API servers trust, it advertises token exchange, its
+    public client `kubernetes` gets ID tokens with that issuer and audience, and
+    its JWKS endpoint serves signing keys.
+  steps:
+  - name: Dex is deployed
+    try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            namespace: monitoring
+            name: dex
+        timeout: 2m
+    cluster: hub
+
+  # The issuer Dex stamps into every token must be the URL the API servers trust (https via the
+  # ingress), Dex must support token exchange (workload identity), and the public client that API
+  # servers expect as audience must exist.
+  - name: Dex issuer contract
+    try:
+    - script:
+        timeout: 90s
+        content: |
+          MIN_DEX_VERSION=2.46.0   # first release that logs token exchanges
+          AUDIENCE=kubernetes      # audience in the spokes' AuthenticationConfiguration
+
+          INGRESS_HOST=$(kubectl -n monitoring get ingress dex -o jsonpath='{.spec.rules[0].host}')
+          if [ -z "$INGRESS_HOST" ]; then
+            echo "ERROR: ingress/dex has no host"
+            exit 1
+          fi
+          EXPECTED_ISSUER="https://${INGRESS_HOST}/dex"
+
+          kubectl -n monitoring port-forward svc/dex 15557:5556 >/dev/null &
+          PF_PID=$!
+          trap 'kill $PF_PID 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do curl -sf -o /dev/null http://localhost:15557/dex/healthz && break; sleep 1; done
+
+          DISC=$(curl -s http://localhost:15557/dex/.well-known/openid-configuration || echo "{}")
+          ISSUER=$(echo "$DISC" | jq -r '.issuer // ""')
+          if [ "$ISSUER" != "$EXPECTED_ISSUER" ]; then
+            echo "ERROR: Dex issuer is '$ISSUER', expected '$EXPECTED_ISSUER'"
+            exit 1
+          fi
+          echo "OK: Dex issuer is $ISSUER"
+
+          if ! echo "$DISC" | jq -e '.grant_types_supported | index("urn:ietf:params:oauth:grant-type:token-exchange")' >/dev/null; then
+            echo "ERROR: Dex does not advertise the token-exchange grant"
+            exit 1
+          fi
+          echo "OK: token-exchange grant advertised"
+
+          VERSION=$(kubectl -n monitoring exec deploy/dex -- dex version | sed -n 's/^Dex Version: v//p')
+          if [ "$(printf '%s\n%s\n' "$MIN_DEX_VERSION" "$VERSION" | sort -V | head -n1)" != "$MIN_DEX_VERSION" ]; then
+            echo "ERROR: Dex $VERSION is older than $MIN_DEX_VERSION"
+            exit 1
+          fi
+          echo "OK: Dex version $VERSION"
+
+          RESP=$(curl -s -X POST http://localhost:15557/dex/token -u "${AUDIENCE}:" \
+            -d grant_type=password -d username=admin@example.com -d password=password -d scope=openid)
+          ID_TOKEN=$(echo "$RESP" | jq -r '.id_token // ""')
+          if [ -z "$ID_TOKEN" ]; then
+            echo "ERROR: no ID token for public client '$AUDIENCE': $RESP"
+            exit 1
+          fi
+          CLAIMS=$(echo "$ID_TOKEN" | cut -d. -f2 | tr '_-' '/+' | awk '{while(length($0)%4)$0=$0"=";print}' | base64 -d 2>/dev/null)
+          if [ "$(echo "$CLAIMS" | jq -r .aud)" != "$AUDIENCE" ] || [ "$(echo "$CLAIMS" | jq -r .iss)" != "$EXPECTED_ISSUER" ]; then
+            echo "ERROR: ID token has unexpected aud/iss: $CLAIMS"
+            exit 1
+          fi
+          echo "OK: ID token for client '$AUDIENCE' carries iss=$EXPECTED_ISSUER"
+    cluster: hub
+
+  - name: JWKS serves signing keys
+    try:
+    - script:
+        timeout: 30s
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/dex 15556:5556 &
+          PF_PID=$!
+          sleep 3
+          JWKS=$(curl -sk http://localhost:15556/dex/keys 2>/dev/null || echo "{}")
+          kill $PF_PID 2>/dev/null || true
+          KEY_COUNT=$(echo "$JWKS" | jq '.keys | length // 0')
+          if [ "$KEY_COUNT" = "0" ]; then
+            echo "ERROR: JWKS returned no keys: $JWKS"
+            exit 1
+          fi
+          echo "OK: JWKS contains $KEY_COUNT signing key(s)"
+    cluster: hub

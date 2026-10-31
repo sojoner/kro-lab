@@ -1,0 +1,129 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: bucket-lifecycle
+spec:
+  concurrent: false
+  namespace: acme-corp
+  cluster: hub
+  description: >
+    The tier's quota is enforced by Ceph: an object over maxSize and
+    an object past maxObjects are both refused. Deleting the Bucket removes the
+    claim, its credentials and endpoint from eu-storage. Uses the test-only
+    tier T (hub-services e2e-values).
+  steps:
+  - name: create a bucket of the smallest tier
+    try:
+    - apply:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: quota
+          spec:
+            regions: [eu]
+            size: T
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: quota-eu
+          spec:
+            maxSize: 1Mi
+            maxObjects: 3
+          status:
+            regions:
+            - region: eu
+              phase: Ready
+              bucketName: acme-corp-quota-eu
+  - name: the quota is enforced
+    cluster: eu-storage
+    try:
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: quota-client
+            namespace: acme-corp
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: aws
+              image: amazon/aws-cli:2.17.0
+              envFrom:
+              - secretRef: {name: quota-eu}
+              - configMapRef: {name: quota-eu}
+              command: ["sh", "-c"]
+              args:
+              - |
+                set -u
+                E="http://$BUCKET_HOST:$BUCKET_PORT"; export AWS_DEFAULT_REGION=us-east-1
+                s3() { aws --endpoint-url "$E" s3 "$@"; }
+                head -c 2097152 /dev/zero > /tmp/big
+                if s3 cp /tmp/big "s3://$BUCKET_NAME/big" >/dev/null 2>&1; then echo "FAIL: 2 MiB object accepted by a 1 MiB bucket"; exit 1; fi
+                echo "OK: object over maxSize refused"
+                echo x > /tmp/small
+                for i in 1 2 3; do s3 cp /tmp/small "s3://$BUCKET_NAME/o$i" >/dev/null 2>&1 || { echo "FAIL: object $i refused within quota"; exit 1; }; done
+                echo "OK: 3 objects accepted"
+                if s3 cp /tmp/small "s3://$BUCKET_NAME/o4" >/dev/null 2>&1; then echo "FAIL: 4th object accepted by a 3-object bucket"; exit 1; fi
+                echo "OK: object past maxObjects refused"
+    - assert:
+        timeout: 240s
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: quota-client
+            namespace: acme-corp
+          status:
+            phase: Succeeded
+    catch:
+    - podLogs:
+        name: quota-client
+        namespace: acme-corp
+  - name: deleting the Bucket removes the claim from eu-storage
+    try:
+    - delete:
+        cluster: hub-acme-corp
+        ref:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          name: quota
+    - error:
+        timeout: 120s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: quota-eu
+  - name: claim, credentials and endpoint are gone
+    cluster: eu-storage
+    try:
+    - error:
+        timeout: 120s
+        resource:
+          apiVersion: objectbucket.io/v1alpha1
+          kind: ObjectBucketClaim
+          metadata:
+            name: quota-eu
+            namespace: acme-corp
+    - error:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: quota-eu
+            namespace: acme-corp
+    - error:
+        timeout: 60s
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: quota-eu
+            namespace: acme-corp

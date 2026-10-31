@@ -1,0 +1,57 @@
+{{ if .Values.authConfiguration.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-configuration
+  namespace: kube-system
+data:
+  authentication-configuration.yaml: |
+    apiVersion: apiserver.config.k8s.io/v1beta1
+    kind: AuthenticationConfiguration
+    jwt:
+    {{- if .Values.authConfiguration.hubIssuer.enabled }}
+      - issuer:
+          url: {{ .Values.authConfiguration.hubIssuer.url | quote }}
+          audiences:
+            - {{ required "authConfiguration.hubIssuer.audience must be set per spoke (values-<name>.yaml)" .Values.authConfiguration.hubIssuer.audience | quote }}
+          {{- if .Values.authConfiguration.hubIssuer.certificateAuthority }}
+          certificateAuthority: {{ .Values.authConfiguration.hubIssuer.certificateAuthority | quote }}
+          {{- end }}
+        {{- if .Values.authConfiguration.hubIssuer.claimValidationRules }}
+        claimValidationRules:
+{{ toYaml .Values.authConfiguration.hubIssuer.claimValidationRules | indent 10 }}
+        {{- end }}
+        claimMappings:
+{{ toYaml .Values.authConfiguration.hubIssuer.claimMappings | indent 10 }}
+    {{- end }}
+    {{- if .Values.authConfiguration.dexIssuer.enabled }}
+      - issuer:
+          url: {{ .Values.authConfiguration.dexIssuer.url | quote }}
+          audiences:
+{{ toYaml .Values.authConfiguration.dexIssuer.audiences | indent 12 }}
+          {{- if gt (len .Values.authConfiguration.dexIssuer.audiences) 1 }}
+          audienceMatchPolicy: MatchAny
+          {{- end }}
+          {{- if .Values.authConfiguration.dexIssuer.certificateAuthority }}
+          certificateAuthority: {{ .Values.authConfiguration.dexIssuer.certificateAuthority | quote }}
+          {{- end }}
+        {{- if .Values.authConfiguration.dexIssuer.claimValidationRules }}
+        claimValidationRules:
+{{ toYaml .Values.authConfiguration.dexIssuer.claimValidationRules | indent 10 }}
+        {{- end }}
+        claimMappings:
+        {{- if .Values.authConfiguration.dexIssuer.workloadConnectors }}
+        {{- /* Workload connectors federate a user per upstream service account; the connector goes into the
+               name so two clusters can never collide. Everyone else keeps <prefix><sub>. */}}
+        {{- $prefix := .Values.authConfiguration.dexIssuer.claimMappings.username.prefix }}
+        {{- $ids := list }}
+        {{- range .Values.authConfiguration.dexIssuer.workloadConnectors }}{{ $ids = append $ids (printf "'%s'" .) }}{{ end }}
+{{ toYaml (omit .Values.authConfiguration.dexIssuer.claimMappings "username") | indent 10 }}
+          username:
+            expression: {{ printf "has(claims.federated_claims) && claims.federated_claims.connector_id in [%s] ? '%s' + claims.federated_claims.connector_id + ':' + claims.federated_claims.user_id : '%s' + claims.sub" (join ", " $ids) $prefix $prefix | quote }}
+        {{- else }}
+{{ toYaml .Values.authConfiguration.dexIssuer.claimMappings | indent 10 }}
+        {{- end }}
+    {{- end }}
+{{ end }}

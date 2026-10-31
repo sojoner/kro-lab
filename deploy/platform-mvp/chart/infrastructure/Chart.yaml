@@ -1,7 +1,7 @@
 apiVersion: v2
 name: infrastructure
 description: Platform MVP hub infrastructure — LGTM stack + ingress + Dex + dashboards
-version: 0.1.0
+version: 0.1.12
 dependencies:
   - name: kube-prometheus-stack
     version: "87.10.1"

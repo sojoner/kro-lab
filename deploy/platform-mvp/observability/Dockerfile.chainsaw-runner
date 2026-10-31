@@ -1,11 +1,14 @@
 FROM golang:1.24-alpine AS builder
 ENV GOTOOLCHAIN=auto
-RUN GOBIN=/usr/local/bin go install github.com/kyverno/chainsaw@latest
+# Pinned: the suite is validated against this version (Makefile CHAINSAW_VERSION).
+ARG CHAINSAW_VERSION=v0.2.15
+RUN GOBIN=/usr/local/bin go install github.com/kyverno/chainsaw@${CHAINSAW_VERSION}
 
 FROM alpine:3.21
 RUN apk add --no-cache curl jq bash coreutils sed kubectl
 COPY --from=builder /usr/local/bin/chainsaw /usr/local/bin/chainsaw
 COPY deploy/platform-mvp/observability/runner.sh /runner.sh
+# The real tests; the CronJob picks which ones run (cronjob.tests in the infrastructure chart).
 COPY tests/e2e/tests/ /tests-bundled/
 RUN chmod +x /runner.sh
 ENTRYPOINT ["/runner.sh"]

@@ -1,0 +1,145 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: bucket-unschedulable
+spec:
+  concurrent: false
+  namespace: acme-corp
+  cluster: hub
+  description: >
+    A region without object storage (us has no Ceph) is reported
+    Unschedulable instead of failing, creates no claim anywhere, and deleting
+    such a Bucket is not blocked by its finalizer.
+  steps:
+  - name: create a bucket in a region without object storage
+    try:
+    - apply:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: nowhere
+          spec:
+            regions: [us]
+            size: S
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: nowhere-us
+          status:
+            regions:
+            - region: us
+              phase: Unschedulable
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: nowhere
+          # One snapshot: Kro derives status.regions and the conditions in the same pass.
+          status:
+            state: IN_PROGRESS
+            (conditions[?type == 'Ready']):
+            - status: 'False'
+            regions:
+            - regions:
+              - region: us
+                phase: Unschedulable
+  - name: no claim exists on any spoke
+    cluster: eu-storage
+    try:
+    - error:
+        resource:
+          apiVersion: objectbucket.io/v1alpha1
+          kind: ObjectBucketClaim
+          metadata:
+            name: nowhere-us
+            namespace: acme-corp
+  - name: delete is not blocked
+    try:
+    - delete:
+        cluster: hub-acme-corp
+        ref:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          name: nowhere
+    - error:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: nowhere-us
+  - name: a ready region does not make an intent with an unschedulable region ready
+    try:
+    - apply:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: mixed
+          spec:
+            regions: [eu, us]
+            size: S
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: mixed-eu
+          status:
+            regions:
+            - region: eu
+              phase: Ready
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: mixed
+          status:
+            state: IN_PROGRESS
+            (conditions[?type == 'Ready']):
+            - status: 'False'
+  - name: a request without a tenant label is unschedulable and creates no claim
+    try:
+    - apply:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: no-tenant
+            labels:
+              platform.example.com/bucket: no-tenant
+          spec:
+            region: eu
+            maxSize: 1Gi
+            maxObjects: 10
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: no-tenant
+          status:
+            regions:
+            - region: eu
+              phase: Unschedulable
+              message: missing label platform.example.com/tenant
+    - error:
+        cluster: eu-storage
+        resource:
+          apiVersion: objectbucket.io/v1alpha1
+          kind: ObjectBucketClaim
+          metadata:
+            name: no-tenant
+            namespace: acme-corp

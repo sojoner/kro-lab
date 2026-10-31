@@ -1,0 +1,16 @@
+# Per-spoke overrides on top of values.yaml. Everything that differs between
+# spokes lives here; shared defaults stay in values.yaml.
+oidcDiscovery:
+  anonymous: true
+
+authConfiguration:
+  hubIssuer:
+    # Must match the audience of the us-token projected into the
+    # binding controllers (chart/hub-services values: spokeTokens).
+    audience: "homelab:us-spoke"
+
+kubevirt:
+  enabled: true
+
+vmBindingControllerRBAC:
+  enabled: true

@@ -1,31 +1,173 @@
 # Hub Services — controllers that depend on infrastructure (Dex, cert-manager)
 # Release name: hub-services (or whatever you choose)
 
-dex:
-  # Dex issuer URL — must match the Dex deployment in the infrastructure chart
-  issuer: "https://bm4080.taildf7067.ts.net/dex"
+# Spoke clusters registered on the hub. Each needs a <name>-kubeconfig Secret
+# (server + CA) and a projected <name>-token in the controllers that engage it
+# (see spokeTokens). Labels let a controller engage only the clusters it serves.
+fleet:
+  clusters:
+    - name: us
+      displayName: "US Cluster"
+      labels:
+        platform.example.com/region: us
+        platform.example.com/offers-vms: "true"
+    - name: eu
+      displayName: "EU Cluster"
+      labels:
+        platform.example.com/region: eu
+        platform.example.com/offers-vms: "true"
+    - name: eu-storage
+      displayName: "EU Storage Cluster"
+      labels:
+        platform.example.com/region: eu
+        platform.example.com/offers-object-storage: "true"
 
-bindingController:
+# Phase a placement controller reports for a usable region. An intent is Ready (Kro readyWhen)
+# only when the request of every region has it.
+readyPhase: Ready
+
+# VmSet service (VM tiers). Tier names become the allowed `size` values.
+vmSet:
+  tiers:
+    S: { cpu: 1, memory: 1Gi }
+    M: { cpu: 2, memory: 2Gi }
+  defaultSize: S
+  maxReplicas: 3
+  image: quay.io/kubevirt/cirros-container-disk-demo:v1.9.1
+  guestUser: cirros
+  # Printed to the VM's serial console once cloud-init has run; used by tests.
+  cloudInitMarker: platform-cloudinit-ok
+  # Restricts sshPublicKey to key types/characters that cannot break out of the
+  # single-quoted shell line in the generated user-data.
+  sshPublicKeyPattern: "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+( [A-Za-z0-9@._-]+)?$"
+
+# Bucket service (S3 quota tiers). Tier names become the allowed `size` values.
+bucket:
+  tiers:
+    S: { maxSize: 1Gi, maxObjects: 10000 }
+    M: { maxSize: 10Gi, maxObjects: 100000 }
+  defaultSize: S
+
+# Places VmSet requests on VM-capable spokes as KubeVirt VMs.
+vmBindingController:
+  enabled: true
   replicas: 1
-  metricsPort: 8080
   image:
-    repository: sojoner/binding-controller
+    repository: sojoner/vm-binding-controller
     tag: dev
-    pullPolicy: Always
+    pullPolicy: IfNotPresent
+  # Numeric UID of the distroless `nonroot` user; kubelet cannot verify the name.
+  runAsUser: 65532
+  # Only ClusterProfiles carrying these labels are engaged (see fleet.clusters).
+  clusterSelector: "platform.example.com/offers-vms=true"
+  runStrategy: Always
+  requeueInterval: 30s
+  pollInterval: 10s
   resources:
     requests: { cpu: 20m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }
-  dex:
-    enabled: true
-    clientID: us-spoke-controller
-    secretName: binding-controller-dex
-    secretKey: client-secret
-    pluginImage:
-      repository: sojoner/dex-auth-plugin
-      tag: dev
-      pullPolicy: Always
+  # One projected token per VM-capable spoke; path must be <clusterName>-token.
   spokeTokens:
+    - serviceAccountToken:
+        path: eu-token
+        audience: homelab:eu-spoke
+        expirationSeconds: 3600
     - serviceAccountToken:
         path: us-token
         audience: homelab:us-spoke
         expirationSeconds: 3600
+
+# Places Bucket requests on object-storage spokes as Rook ObjectBucketClaims.
+bucketBindingController:
+  enabled: true
+  replicas: 1
+  image:
+    repository: sojoner/bucket-binding-controller
+    tag: dev
+    pullPolicy: IfNotPresent
+  # Numeric UID of the distroless `nonroot` user; kubelet cannot verify the name.
+  runAsUser: 65532
+  # Only ClusterProfiles carrying these labels are engaged (see fleet.clusters).
+  clusterSelector: "platform.example.com/offers-object-storage=true"
+  # ClusterProfile label naming the region a spoke serves.
+  regionLabel: platform.example.com/region
+  # Must match the bucket StorageClass of the spoke's Rook object store.
+  storageClass: ceph-bucket
+  requeueInterval: 30s
+  cleanupInterval: 5s
+  pollInterval: 10s
+  metricsPort: 8080
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+  # One projected token per object-storage spoke; path must be <clusterName>-token.
+  spokeTokens:
+    - serviceAccountToken:
+        path: eu-storage-token
+        audience: homelab:eu-storage-spoke
+        expirationSeconds: 3600
+
+# Tenants and their workload identity come from deploy/platform-mvp/tenants.yaml (the Makefile
+# passes it with -f; Flux carries a copy). Each tenant gets a hub namespace in which its
+# workload identity may create BucketIntents and VmSetIntents.
+tenants: []
+workloadIdentity: {}
+
+# Tenancy: a tenant is a hub namespace, the intents in it are its inventory.
+# The platform operator on the hub, the Dex group <userPrefix><group>: Kubernetes' view role
+# (namespaced kinds, never Secrets), read on the cluster-scoped and platform kinds below, and
+# namespace deletion, which the platform-admin-offboards-tenants policy limits to tenant
+# namespaces. Intents are read-only for it, so RBAC refuses its writes.
+platformOperator:
+  group: platform-admin
+  viewClusterRole: view
+  readVerbs: [get, list, watch]
+  readCoreResources: [namespaces, nodes, persistentvolumes, podtemplates, componentstatuses]
+  readApiGroups:
+    - apiextensions.k8s.io
+    - storage.k8s.io
+    - rbac.authorization.k8s.io
+    - admissionregistration.k8s.io
+    - platform.example.com
+    - multicluster.x-k8s.io
+    - kro.run
+    - source.toolkit.fluxcd.io
+    - helm.toolkit.fluxcd.io
+    - kustomize.toolkit.fluxcd.io
+    - monitoring.coreos.com
+    - cert-manager.io
+    - metrics.open-control-plane.io
+    - metrics.k8s.io              # Headlamp's overview asks for node metrics
+    - gateway.networking.k8s.io   # Headlamp's Gateway pages (not installed: not found, not forbidden)
+    - internal.kro.run
+    - networking.k8s.io
+    - node.k8s.io
+    - scheduling.k8s.io
+    - coordination.k8s.io
+    - certificates.k8s.io
+    - flowcontrol.apiserver.k8s.io
+    - apiregistration.k8s.io
+    - resource.k8s.io
+
+tenancy:
+  namespaceLabel: platform.example.com/tenant-namespace
+  # The intent kinds tenant principals use; Kro generates their CRDs from the RGDs.
+  intentGroup: platform.example.com
+  intentResources: [bucketintents, vmsetintents]
+  # Every tenant principal may read CRDs, schemas only: Headlamp's sidebar lists every CRD and
+  # its page for a custom resource reads the CRD first. Objects of other kinds stay forbidden.
+  crdReadVerbs: [get, list, watch]
+  # Who may use a tenant's intents. Humans are the Dex groups <userPrefix><tenant>-<suffix>
+  # (workloadIdentity.userPrefix); the tenant's workload identity is bound too where
+  # workloadIdentity is true. Admission (intent-policies.yaml) lets in any principal listed
+  # here and RBAC decides the verbs.
+  intentRoles:
+    writer:
+      verbs: [get, list, watch, create, update, patch, delete]
+      groupSuffixes: [admin, developer]
+      workloadIdentity: true
+    reader:
+      verbs: [get, list, watch]
+      groupSuffixes: [analyst]
+  # May delete intents so that deleting the namespace offboards the tenant.
+  offboardingUser: system:serviceaccount:kube-system:namespace-controller

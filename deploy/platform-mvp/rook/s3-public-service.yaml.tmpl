@@ -1,0 +1,17 @@
+# The RADOS Gateway on a NodePort, which the storage spoke's kind config maps to the same host port
+# (S3_NODE_PORT): tenants reach their buckets from outside the cluster (make deploy-rook-<spoke>).
+apiVersion: v1
+kind: Service
+metadata:
+  name: rook-ceph-rgw-s3-public
+  namespace: rook-ceph
+spec:
+  type: NodePort
+  selector:
+    app: rook-ceph-rgw
+    rook_object_store: s3
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      nodePort: __S3_NODE_PORT__

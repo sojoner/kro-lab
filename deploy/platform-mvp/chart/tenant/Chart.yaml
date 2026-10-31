@@ -1,0 +1,4 @@
+apiVersion: v2
+name: tenant
+description: A tenant's order, its buckets and VM sets as intents in its hub namespace. The tenant renders it and applies it with its own kubectl login.
+version: 0.1.0

@@ -1,0 +1,47 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: tenant-kubectl-login
+spec:
+  concurrent: false
+  cluster: hub
+  description: >
+    A tenant logs in with kubectl. make tenant-kubeconfigs writes a kubeconfig per tenant whose
+    contexts (hub, us, eu, eu-storage) get a Dex ID token from kubectl oidc-login, Dex client
+    kubernetes. People use the keyboard flow; this test uses the password grant. Alice is in group
+    dex:acme-corp-admin on every cluster and reaches her tenant's namespace, not globex-inc's.
+    Needs kubelogin on the PATH (make install-kubelogin).
+  steps:
+  - name: alice logs in with kubectl and stays in her namespace on every cluster
+    try:
+    - script:
+        timeout: 3m
+        content: |
+          set -u
+          fail=0
+          SRC=$(git rev-parse --show-toplevel)/hack/platform-mvp/kubeconfig-acme-corp
+          [ -f "$SRC" ] || { echo "ERROR: $SRC is missing (make tenant-kubeconfigs)"; exit 1; }
+          command -v kubelogin >/dev/null || { echo "ERROR: kubelogin is not on the PATH (make install-kubelogin)"; exit 1; }
+          W=$(mktemp -d)
+          trap 'rm -rf "$W"' EXIT
+          # The password grant instead of the keyboard flow, and a token cache of its own.
+          kubectl config view --raw --kubeconfig "$SRC" -o json | jq --arg c "$W/cache" \
+            '.users[].user.exec.args |= (map(select(test("^--(grant-type|token-cache-dir)") | not))
+               + ["--grant-type=password", "--username=alice@acme-corp.example.com", "--password=password", "--token-cache-dir=" + $c])' > "$W/config"
+          K="kubectl --kubeconfig $W/config"
+          for C in hub us eu eu-storage; do
+            G=$($K --context "$C" auth whoami -o json 2>&1 | jq -r '.status.userInfo.groups // [] | join(",")' 2>/dev/null)
+            case ",$G," in *,dex:acme-corp-admin,*) echo "OK: alice logs in to $C in dex:acme-corp-admin" ;; *) echo "ERROR: alice on $C has groups '$G'"; fail=1 ;; esac
+          done
+          ok() { if $K "$@" >/dev/null 2>&1; then echo "OK: $*"; else echo "ERROR: refused: $*"; fail=1; fi; }
+          no() {
+            OUT=$($K "$@" 2>&1) && { echo "ERROR: allowed: $*"; fail=1; return; }
+            echo "$OUT" | grep -q Forbidden && echo "OK: forbidden: $*" || { echo "ERROR: $* failed for another reason: $OUT"; fail=1; }
+          }
+          ok --context hub get bucketintents,vmsetintents
+          no --context hub get bucketintents -n globex-inc
+          ok --context eu get virtualmachines
+          no --context eu get virtualmachines -n globex-inc
+          ok --context eu-storage get objectbucketclaims
+          no --context eu-storage get objectbucketclaims -n globex-inc
+          exit $fail

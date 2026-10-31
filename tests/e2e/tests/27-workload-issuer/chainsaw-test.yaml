@@ -1,0 +1,108 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: workload-issuer
+spec:
+  concurrent: false
+  description: >
+    Workload identity, issuer side. The `us` spoke publishes its service-account issuer
+    (anonymous OIDC discovery, reachable from the hub), and Dex trusts it through the
+    `us-workloads` connector: a service-account token from `us` can be exchanged (RFC 8693)
+    for a Dex ID token that names the connector and the original identity.
+    Chainsaw exposes only the current step's cluster, so the `us` token is handed to the
+    hub step through a file.
+  steps:
+    - name: us publishes its issuer anonymously
+      try:
+      - script:
+          timeout: 120s
+          content: |
+            ISSUER_URL=https://us-control-plane:6443   # SA issuer of the us spoke (kind-spoke.yaml.tmpl)
+
+            POD=wi-issuer-probe-$$
+            OUT=$(kubectl run "$POD" --rm -i --restart=Never -q --image=curlimages/curl -- \
+              sh -c "curl -sk $ISSUER_URL/.well-known/openid-configuration; echo; echo '---'; curl -sk $ISSUER_URL/openid/v1/jwks" 2>/dev/null || true)
+            DISC=${OUT%%---*}
+            JWKS=${OUT#*---}
+
+            ISSUER=$(echo "$DISC" | jq -r '.issuer // ""' 2>/dev/null || echo "")
+            if [ "$ISSUER" != "$ISSUER_URL" ]; then
+              echo "ERROR: anonymous discovery returned issuer '$ISSUER', expected '$ISSUER_URL'"
+              echo "$OUT" | head -c 300
+              exit 1
+            fi
+            echo "OK: discovery issuer is $ISSUER"
+
+            KEYS=$(echo "$JWKS" | jq '.keys | length' 2>/dev/null || echo 0)
+            if [ "$KEYS" -lt 1 ]; then
+              echo "ERROR: anonymous JWKS has no keys: $JWKS"
+              exit 1
+            fi
+            echo "OK: anonymous JWKS serves $KEYS key(s)"
+      cluster: hub
+
+    - name: mint a service-account token on us
+      try:
+      - script:
+          timeout: 60s
+          content: |
+            TOKEN_FILE=/tmp/wi-issuer-subject-token
+            SA=wi-issuer-probe
+
+            kubectl -n default create serviceaccount "$SA" >/dev/null
+            # Dex only checks the signature, so the account can go as soon as the token exists.
+            trap 'kubectl -n default delete serviceaccount "$SA" --ignore-not-found >/dev/null' EXIT
+            TOKEN=$(kubectl -n default create token "$SA" --audience dex --duration 10m)
+            (umask 077; echo "$TOKEN" > "$TOKEN_FILE")
+            echo "OK: minted token for system:serviceaccount:default:$SA"
+      cluster: us
+
+    - name: Dex exchanges the us token
+      try:
+      - script:
+          timeout: 90s
+          content: |
+            TOKEN_FILE=/tmp/wi-issuer-subject-token
+            CONNECTOR=us-workloads
+            CLIENT=kubernetes
+            EXPECTED_USER=system:serviceaccount:default:wi-issuer-probe
+            trap 'rm -f "$TOKEN_FILE"' EXIT
+
+            SUBJECT_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null || echo "")
+            if [ -z "$SUBJECT_TOKEN" ]; then
+              echo "ERROR: no us token handed over from the previous step"
+              exit 1
+            fi
+
+            INGRESS_HOST=$(kubectl -n monitoring get ingress dex -o jsonpath='{.spec.rules[0].host}')
+            EXPECTED_ISSUER="https://${INGRESS_HOST}/dex"
+
+            kubectl -n monitoring port-forward svc/dex 15530:5556 >/dev/null &
+            PF_PID=$!
+            trap 'kill $PF_PID 2>/dev/null || true; rm -f "$TOKEN_FILE"' EXIT
+            for _ in $(seq 1 30); do curl -sf -o /dev/null http://localhost:15530/dex/healthz && break; sleep 1; done
+
+            RESP=$(curl -s -X POST http://localhost:15530/dex/token -u "${CLIENT}:" \
+              -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+              -d connector_id=${CONNECTOR} \
+              -d "scope=openid federated:id" \
+              -d requested_token_type=urn:ietf:params:oauth:token-type:id_token \
+              -d subject_token_type=urn:ietf:params:oauth:token-type:id_token \
+              --data-urlencode "subject_token=${SUBJECT_TOKEN}")
+            DEX_TOKEN=$(echo "$RESP" | jq -r '.access_token // ""')
+            if [ -z "$DEX_TOKEN" ]; then
+              echo "ERROR: token exchange failed: $RESP"
+              exit 1
+            fi
+
+            CLAIMS=$(echo "$DEX_TOKEN" | cut -d. -f2 | tr '_-' '/+' | awk '{while(length($0)%4)$0=$0"=";print}' | base64 -d 2>/dev/null)
+            GOT=$(echo "$CLAIMS" | jq -r '[.iss, .aud, .federated_claims.connector_id, .federated_claims.user_id] | join(" ")')
+            WANT="$EXPECTED_ISSUER $CLIENT $CONNECTOR $EXPECTED_USER"
+            if [ "$GOT" != "$WANT" ]; then
+              echo "ERROR: unexpected claims (iss aud connector user)"
+              echo "  got:  $GOT"
+              echo "  want: $WANT"
+              exit 1
+            fi
+            echo "OK: Dex token names connector $CONNECTOR and user $EXPECTED_USER"
+      cluster: hub

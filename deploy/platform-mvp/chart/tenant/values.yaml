@@ -1,0 +1,8 @@
+# The tenant's hub namespace (its account). Set in values-<tenant>.yaml.
+tenant: ""
+# The public key installed on every VM (RSA: the CirrOS guest takes no other): --set-file sshPublicKey=$HOME/.ssh/demo_rsa.pub
+sshPublicKey: ""
+# BucketIntents: name, regions, size (a tier, default S).
+buckets: []
+# VmSetIntents: name, regions, size (a tier, default S), replicas (per region).
+vmSets: []

@@ -1,0 +1,107 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: vmset-unschedulable
+spec:
+  concurrent: false
+  namespace: acme-corp
+  cluster: hub
+  description: >
+    A region that no cluster serves with VMs (asia) is
+    reported Unschedulable instead of failing, and deleting such a VmSet is
+    not blocked by its finalizer.
+  steps:
+  - name: create VMs in a region without VM support
+    try:
+    - apply:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: VmSetIntent
+          metadata:
+            name: nowhere
+          spec:
+            regions: [asia]
+            size: S
+            replicas: 1
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl demo@example"
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalVmSetRequest
+          metadata:
+            name: nowhere-asia
+          status:
+            regions:
+            - region: asia
+              phase: Unschedulable
+              readyReplicas: 0
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: VmSetIntent
+          metadata:
+            name: nowhere
+          # One snapshot: Kro derives status.regions and the conditions in the same pass.
+          status:
+            state: IN_PROGRESS
+            (conditions[?type == 'Ready']):
+            - status: 'False'
+            regions:
+            - regions:
+              - region: asia
+                phase: Unschedulable
+  - name: delete is not blocked
+    try:
+    - delete:
+        cluster: hub-acme-corp
+        ref:
+          apiVersion: platform.example.com/v1alpha1
+          kind: VmSetIntent
+          name: nowhere
+    - error:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalVmSetRequest
+          metadata:
+            name: nowhere-asia
+  - name: a request without a tenant label is unschedulable and creates no VM
+    try:
+    - apply:
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalVmSetRequest
+          metadata:
+            name: no-tenant
+            labels:
+              platform.example.com/vmset: no-tenant
+          spec:
+            region: eu
+            replicas: 1
+            cpu: 1
+            memory: 1Gi
+            image: quay.io/kubevirt/cirros-container-disk-demo:v1.9.1
+            cloudInitSecretName: no-tenant-cloudinit
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalVmSetRequest
+          metadata:
+            name: no-tenant
+          status:
+            regions:
+            - region: eu
+              phase: Unschedulable
+              message: missing label platform.example.com/tenant
+    - error:
+        cluster: eu
+        resource:
+          apiVersion: kubevirt.io/v1
+          kind: VirtualMachine
+          metadata:
+            name: no-tenant-0
+            namespace: acme-corp

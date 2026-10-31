@@ -1,0 +1,237 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: bucket-provisioning
+spec:
+  concurrent: false
+  namespace: acme-corp
+  cluster: hub
+  description: >
+    The Bucket service end to end: a Bucket expands into one
+    tenant-labelled RegionalBucketRequest per region carrying the tier's
+    quota, becomes a bound claim on eu-storage, reports its endpoint back to
+    the hub, and stores objects over S3; unknown tiers and size changes are
+    rejected.
+  steps:
+  - name: size S expands to a request with the S quota
+    try:
+    - apply:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: media
+          spec:
+            regions: [eu]
+            size: S
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: media-eu
+            labels:
+              platform.example.com/tenant: acme-corp
+          spec:
+            region: eu
+            maxSize: 1Gi
+            maxObjects: 10000
+
+  - name: the claim is bound on eu-storage with the S quota
+    cluster: eu-storage
+    try:
+    - assert:
+        timeout: 180s
+        resource:
+          apiVersion: objectbucket.io/v1alpha1
+          kind: ObjectBucketClaim
+          metadata:
+            name: media-eu
+            namespace: acme-corp
+            labels:
+              platform.example.com/tenant: acme-corp
+              platform.example.com/bucket: media
+          spec:
+            bucketName: acme-corp-media-eu
+            storageClassName: ceph-bucket
+            additionalConfig:
+              maxSize: 1Gi
+              maxObjects: "10000"
+          status:
+            phase: Bound
+
+  - name: status flows back to the hub
+    try:
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: media-eu
+          status:
+            regions:
+            - region: eu
+              phase: Ready
+              bucketName: acme-corp-media-eu
+              endpoint: http://rook-ceph-rgw-s3.rook-ceph.svc:80
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: media
+          # Kro maps each request's whole status, so this nests like VmSet's. The intent is
+          # Ready once every region is: Kro evaluates readyWhen on the request collection.
+          status:
+            state: ACTIVE
+            (conditions[?type == 'Ready']):
+            - status: 'True'
+            regions:
+            - regions:
+              - region: eu
+                phase: Ready
+
+  - name: objects can be stored and read back over S3
+    cluster: eu-storage
+    try:
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: media-client
+            namespace: acme-corp
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: aws
+              image: amazon/aws-cli:2.17.0
+              envFrom:
+              - secretRef: {name: media-eu}
+              - configMapRef: {name: media-eu}
+              command: ["sh", "-c"]
+              args:
+              - |
+                set -eu
+                E="http://$BUCKET_HOST:$BUCKET_PORT"; export AWS_DEFAULT_REGION=us-east-1
+                s3() { aws --endpoint-url "$E" s3 "$@"; }
+                echo "hello from acme-corp" > /tmp/in
+                s3 cp /tmp/in "s3://$BUCKET_NAME/hello.txt" >/dev/null
+                s3 cp "s3://$BUCKET_NAME/hello.txt" /tmp/out >/dev/null
+                cmp /tmp/in /tmp/out
+                echo "OK: object stored and read back"
+    - assert:
+        timeout: 240s
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: media-client
+            namespace: acme-corp
+          status:
+            phase: Succeeded
+    catch:
+    - podLogs:
+        name: media-client
+        namespace: acme-corp
+
+  - name: size M maps to the M quota
+    try:
+    - apply:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: media-m
+          spec:
+            regions: [eu]
+            size: M
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: media-m-eu
+          spec:
+            maxSize: 10Gi
+            maxObjects: 100000
+
+  - name: size defaults to S, one request per region
+    try:
+    - apply:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: media-multi
+          spec:
+            regions: [eu, us]
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: media-multi-eu
+          spec:
+            maxSize: 1Gi
+    - assert:
+        timeout: 60s
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: RegionalBucketRequest
+          metadata:
+            name: media-multi-us
+          spec:
+            maxSize: 1Gi
+
+  - name: size cannot change
+    try:
+    - patch:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: media
+          spec:
+            size: M
+        expect:
+        - check:
+            ($error != null): true
+
+  - name: invalid input is rejected
+    try:
+    - apply:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: bad-size
+          spec:
+            regions: [eu]
+            size: L
+        expect:
+        - check:
+            ($error != null): true
+    - apply:
+        cluster: hub-acme-corp
+        resource:
+          apiVersion: platform.example.com/v1alpha1
+          kind: BucketIntent
+          metadata:
+            name: bad-no-regions
+          spec:
+            regions: []
+            size: S
+        expect:
+        - check:
+            ($error != null): true

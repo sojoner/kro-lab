@@ -1,0 +1,107 @@
+authConfiguration:
+  enabled: true
+  hubIssuer:
+    enabled: true
+    url: "https://hub-control-plane:6443"
+    # Required, set per spoke in values-<name>.yaml: it must equal the audience
+    # of the <name>-token projected into the hub controllers that engage the spoke.
+    audience: ""
+    claimValidationRules:
+      - expression: 'claims.sub.startsWith("system:serviceaccount:default:")'
+        message: "Only ServiceAccounts from the default namespace on the hub may authenticate."
+    claimMappings:
+      username:
+        claim: sub
+        prefix: "hub:"
+  dexIssuer:
+    enabled: true
+    url: "https://bm4080.taildf7067.ts.net/dex"
+    audiences:
+      - kubernetes
+    # Dex connector ids (infrastructure chart dex.workloadConnectors[].id) whose users are workloads.
+    # Their username becomes <prefix><connector>:<upstream subject>; empty keeps <prefix><sub> for all.
+    workloadConnectors:
+      - us-workloads
+    claimMappings:
+      username:
+        claim: sub
+        prefix: "dex:"
+      groups:
+        claim: groups
+        prefix: "dex:"
+
+# Workload identity: serviceAccount, connectorId and userPrefix come from
+# deploy/platform-mvp/tenants.yaml (the Makefile passes it with -f). Enabled per spoke.
+# Publish this spoke's service-account issuer to unauthenticated callers (needed when Dex
+# trusts workloads running here). Enabled per spoke in values-<name>.yaml.
+oidcDiscovery:
+  anonymous: false
+
+oidcVerifier:
+  enabled: true
+  replicas: 1
+  issuer: "https://bm4080.taildf7067.ts.net/dex"
+  audience: ""
+  insecureSkipVerify: true
+  trustJWKS: |
+    {
+      "keys": [
+        {
+          "alg": "RS256",
+          "e": "AQAB",
+          "kid": "test-key-001",
+          "kty": "RSA",
+          "n": "ujOk4S16brZhQOwEBkOkQZjVSaY78vNcqR_ZyujcmQc3N3Ox1y_vshyF1fZBVYmGtPL93vFdw5NIBYuaVYhGtqUfjBQ4uLFtaLYC00m8oniJiJ0upnr3oqn96aw1tDmYLazd3gw_KQNpB2wIj3_IyIUjGZnVBd6CwrVxe1H87ts5GJwmhQ_1f_WcSE6HmCFdVstZR8lQlyjpTSQmz2G6GLUsDMkpOaCKXzHgjPGVeedLA6CDpJhQX4EJv43xYciao0RFHC8MpGze20Bkk8rOSgmoJqTSQjpquUAjBm0OD-zloYACpwzxPJ_y9VmA9W1qZh17hWpho-x0wPuKdVC0dw",
+          "use": "sig"
+        }
+      ]
+    }
+  image:
+    repository: sojoner/oidc-verifier
+    tag: dev
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 10m, memory: 16Mi }
+    limits: { cpu: 50m, memory: 64Mi }
+
+admissionPolicies:
+  enabled: true
+  platformAdminSubjects:
+    - kind: Group
+      name: dex:platform-admin
+  # Added to kube-system, kube-public and kube-node-lease in protect-system-namespaces.
+  additionalProtectedNamespaces: []
+
+# Tenants come from deploy/platform-mvp/tenants.yaml (the Makefile passes it with -f).
+tenants: []
+
+# KubeVirt (VMs as a service). Enabled per spoke in values-<name>.yaml; the
+# spoke host needs /dev/kvm unless useEmulation is true.
+kubevirt:
+  enabled: false
+  useEmulation: false
+  imagePullPolicy: IfNotPresent
+
+# RBAC for the hub's vm-binding-controller on VM-capable spokes. It may write in the tenant
+# namespaces only; there is no fallback namespace. Further namespaces go in extraNamespaces.
+vmBindingControllerRBAC:
+  enabled: false
+  hubIdentity: "hub:system:serviceaccount:default:vm-binding-controller"
+  extraNamespaces: []
+
+# Object storage (S3 buckets served by Rook/Ceph RGW, installed by
+# `make deploy-rook-<spoke>`). Enabled per spoke in values-<name>.yaml; it adds
+# the claim/credential read rights to the tenant roles.
+objectStorage:
+  enabled: false
+
+# RBAC for the hub's bucket-binding-controller on object-storage spokes.
+# It may write in the tenant namespaces only; there is no fallback namespace. Further
+# namespaces go in extraNamespaces.
+bucketBindingControllerRBAC:
+  enabled: false
+  hubIdentity: "hub:system:serviceaccount:default:bucket-binding-controller"
+  extraNamespaces: []
+
+# Tenant groups read CRDs (schemas, not objects): the portal needs them for its pages.
+tenantCrdReadVerbs: [get, list, watch]

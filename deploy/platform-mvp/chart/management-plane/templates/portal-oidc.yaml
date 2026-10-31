@@ -1,0 +1,16 @@
+{{- if .Values.headlamp.enabled }}
+# Headlamp reads its OIDC settings from this Secret (headlamp.config.oidc.externalSecret). There is
+# nothing secret in it: the client is public and uses PKCE. It exists so that the host is the one input.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.portal.oidc.secretName }}
+  namespace: {{ .Release.Namespace }}
+stringData:
+  OIDC_CLIENT_ID: {{ .Values.portal.oidc.clientID | quote }}
+  OIDC_CLIENT_SECRET: ""
+  OIDC_ISSUER_URL: {{ printf "https://%s%s" (required "ingress.host must be set" .Values.ingress.host) .Values.portal.oidc.issuerPath | quote }}
+  OIDC_SCOPES: {{ .Values.portal.oidc.scopes | quote }}
+  OIDC_CALLBACK_URL: {{ printf "https://%s%s/oidc-callback" .Values.ingress.host .Values.ingress.path | quote }}
+  OIDC_USE_PKCE: "true"
+{{- end }}

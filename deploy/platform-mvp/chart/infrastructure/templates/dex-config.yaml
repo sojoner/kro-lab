@@ -1,0 +1,104 @@
+{{ if .Values.dex.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dex-config
+  namespace: {{ .Values.dex.namespace }}
+data:
+  config.yaml: |
+    issuer: {{ .Values.dex.issuer | default (printf "https://%s/dex" .Values.ingress.host) }}
+    storage:
+      type: sqlite3
+      config:
+        file: /var/dex/dex.db
+    expiry:
+      idTokens: {{ .Values.dex.expiry.idTokens }}
+    web:
+      http: 0.0.0.0:5556
+    telemetry:
+      http: 0.0.0.0:5558
+    oauth2:
+      skipApprovalScreen: true
+      responseTypes:
+        - code
+        - token
+        - id_token
+      passwordConnector: {{ .Values.dex.passwordConnector }}
+    staticClients:
+      - id: {{ .Values.dex.kubernetesClient.id }}
+        name: {{ .Values.dex.kubernetesClient.name }}
+        public: true
+        redirectURIs:
+        {{- range .Values.dex.kubernetesClient.redirectPaths }}
+          - https://{{ $.Values.ingress.host }}{{ . }}
+        {{- end }}
+        {{- range .Values.dex.kubernetesClient.redirectURIs }}
+          - {{ . }}
+        {{- end }}
+    connectors:
+{{- range .Values.dex.connectors }}
+      - type: {{ .type }}
+        id: {{ .id }}
+        name: {{ .name }}
+        config:
+          {{- toYaml .config | nindent 10 }}
+{{- end }}
+{{- range .Values.dex.workloadConnectors }}
+      - type: oidc
+        id: {{ .id }}
+        name: {{ .name }}
+        config:
+          issuer: {{ .issuer }}
+          rootCAs:
+            - /etc/dex/upstream-ca/{{ .caKey }}
+          scopes:
+            - openid
+          userNameKey: sub
+          insecureSkipEmailVerified: true
+{{- end }}
+    enablePasswordDB: true
+    staticPasswords:
+      - email: "admin@example.com"
+        hash: "$2a$10$vNryCPOct./Dse9.B3oQKePz92BpuCbZ1GvWb1x6IpoPTCM2CxeYe"
+        username: "admin"
+        userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
+        groups:
+          - "platform-admin"
+      - email: "alice@acme-corp.example.com"
+        hash: "$2a$10$vNryCPOct./Dse9.B3oQKePz92BpuCbZ1GvWb1x6IpoPTCM2CxeYe"
+        username: "alice"
+        userID: "11a11111-a111-1111-1111-111111111111"
+        groups:
+          - "acme-corp-admin"
+      - email: "bob@acme-corp.example.com"
+        hash: "$2a$10$vNryCPOct./Dse9.B3oQKePz92BpuCbZ1GvWb1x6IpoPTCM2CxeYe"
+        username: "bob"
+        userID: "22b22222-b222-2222-2222-222222222222"
+        groups:
+          - "acme-corp-developer"
+      - email: "carol@acme-corp.example.com"
+        hash: "$2a$10$vNryCPOct./Dse9.B3oQKePz92BpuCbZ1GvWb1x6IpoPTCM2CxeYe"
+        username: "carol"
+        userID: "33c33333-c333-3333-3333-333333333333"
+        groups:
+          - "acme-corp-analyst"
+      - email: "dave@globex-inc.example.com"
+        hash: "$2a$10$vNryCPOct./Dse9.B3oQKePz92BpuCbZ1GvWb1x6IpoPTCM2CxeYe"
+        username: "dave"
+        userID: "44d44444-d444-4444-4444-444444444444"
+        groups:
+          - "globex-inc-admin"
+      - email: "eve@globex-inc.example.com"
+        hash: "$2a$10$vNryCPOct./Dse9.B3oQKePz92BpuCbZ1GvWb1x6IpoPTCM2CxeYe"
+        username: "eve"
+        userID: "55e55555-e555-5555-5555-555555555555"
+        groups:
+          - "globex-inc-developer"
+      - email: "frank@globex-inc.example.com"
+        hash: "$2a$10$vNryCPOct./Dse9.B3oQKePz92BpuCbZ1GvWb1x6IpoPTCM2CxeYe"
+        username: "frank"
+        userID: "66f66666-f666-6666-6666-666666666666"
+        groups:
+          - "globex-inc-analyst"
+{{ end }}

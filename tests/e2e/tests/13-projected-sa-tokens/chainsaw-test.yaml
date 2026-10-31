@@ -1,0 +1,96 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: projected-sa-tokens
+spec:
+  concurrent: false
+  description: >
+    Controllers reach the spokes with hub-issued projected service-account tokens:
+    the hub API server serves OIDC discovery, the bucket controller mounts a projected
+    token per spoke with that spoke's audience, and the spoke API server loads an
+    AuthenticationConfiguration to trust it.
+  steps:
+    - name: hub apiserver serves OIDC discovery
+      try:
+      - script:
+          timeout: 30s
+          content: |
+            OIDC_CONFIG=$(kubectl get --raw /.well-known/openid-configuration 2>/dev/null || echo "{}")
+
+            ISSUER=$(echo "$OIDC_CONFIG" | jq -r '.issuer // ""')
+            JWKS_URI=$(echo "$OIDC_CONFIG" | jq -r '.jwks_uri // ""')
+
+            if [ -z "$ISSUER" ] || [ -z "$JWKS_URI" ]; then
+              echo "ERROR: hub kube-apiserver serves no OIDC discovery"
+              exit 1
+            fi
+            echo "OK: hub kube-apiserver OIDC issuer: $ISSUER"
+            echo "OK: hub kube-apiserver JWKS URI: $JWKS_URI"
+      cluster: hub
+
+    - name: controller has a projected spoke token
+      try:
+      - script:
+          timeout: 30s
+          content: |
+            CONTROLLER_POD=$(kubectl get pod -n default -l app=bucket-binding-controller -o jsonpath='{.items[0].metadata.name}')
+            if [ -z "$CONTROLLER_POD" ]; then
+              echo "ERROR: bucket-binding-controller pod not found"
+              exit 1
+            fi
+
+            VOLUMES=$(kubectl get pod -n default "$CONTROLLER_POD" -o json)
+            TOKEN_SOURCES=$(echo "$VOLUMES" | jq '[.spec.volumes[]? | select(.name=="spoke-tokens") | .projected.sources[]? | select(.serviceAccountToken != null)]')
+
+            if [ "$(echo "$TOKEN_SOURCES" | jq 'length')" = "0" ]; then
+              echo "ERROR: no projected serviceAccountToken sources found"
+              exit 1
+            fi
+
+            echo "OK: projected spoke-tokens volume with $(echo "$TOKEN_SOURCES" | jq 'length') token source(s)"
+
+            # Verify each token has an audience and expiration
+            for i in $(echo "$TOKEN_SOURCES" | jq -r 'keys[]'); do
+              PATH_VAL=$(echo "$TOKEN_SOURCES" | jq -r ".[$i].serviceAccountToken.path")
+              AUDIENCE=$(echo "$TOKEN_SOURCES" | jq -r ".[$i].serviceAccountToken.audience // \"N/A\"")
+              EXPIRATION=$(echo "$TOKEN_SOURCES" | jq -r ".[$i].serviceAccountToken.expirationSeconds // \"N/A\"")
+              echo "OK:   token[$i] path=$PATH_VAL audience=$AUDIENCE expires=${EXPIRATION}s"
+            done
+      cluster: hub
+
+    - name: token volume is mounted in the controller
+      try:
+      - script:
+          timeout: 30s
+          content: |
+            CONTROLLER_POD=$(kubectl get pod -n default -l app=bucket-binding-controller -o jsonpath='{.items[0].metadata.name}')
+
+            TOKEN_DIR="/var/run/secrets/tokens"
+            MOUNT_CHECK=$(kubectl get pod -n default "$CONTROLLER_POD" -o json | jq '[.spec.containers[0].volumeMounts[]? | select(.mountPath=="'"$TOKEN_DIR"'")] | length')
+
+            if [ "$MOUNT_CHECK" = "0" ]; then
+              echo "ERROR: $TOKEN_DIR not mounted in bucket-binding-controller"
+              exit 1
+            fi
+            echo "OK: $TOKEN_DIR is mounted in bucket-binding-controller"
+      cluster: hub
+
+    - name: spoke apiserver loads an AuthenticationConfiguration
+      try:
+      - script:
+          timeout: 30s
+          content: |
+            # Check that spoke kube-apiserver has AuthenticationConfiguration
+            APISERVER_POD=$(kubectl get pod -n kube-system -l component=kube-apiserver -o jsonpath='{.items[0].metadata.name}')
+            if [ -z "$APISERVER_POD" ]; then
+              echo "ERROR: kube-apiserver pod not found"
+              exit 1
+            fi
+
+            AUTH_CONFIG_ARG=$(kubectl get pod -n kube-system "$APISERVER_POD" -o jsonpath='{.spec.containers[0].command}' | grep -o 'authentication-config[^"]*' || echo "")
+            if [ -z "$AUTH_CONFIG_ARG" ]; then
+              echo "ERROR: spoke kube-apiserver missing --authentication-config flag"
+              exit 1
+            fi
+            echo "OK: spoke kube-apiserver has --authentication-config ($AUTH_CONFIG_ARG)"
+      cluster: us

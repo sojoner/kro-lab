@@ -1,0 +1,79 @@
+{{- /* One hub namespace per tenant, with the roles (tenancy.intentRoles) that tenant principals
+       hold on its intents. Humans are bound by Dex group, the workload identity by user, under
+       the same table. Admission (intent-policies.yaml) decides who is a tenant principal at all. */}}
+{{- $wi := .Values.workloadIdentity }}
+{{- $prefix := required "workloadIdentity.userPrefix (deploy/platform-mvp/tenants.yaml)" $wi.userPrefix }}
+{{- range $tenant := .Values.tenants }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $tenant.id }}
+  labels:
+    {{ $.Values.tenancy.namespaceLabel }}: "true"
+{{- range $role, $spec := $.Values.tenancy.intentRoles }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $tenant.id }}-intent-{{ $role }}
+  namespace: {{ $tenant.id }}
+rules:
+  - apiGroups: [{{ $.Values.tenancy.intentGroup | quote }}]
+    resources: {{ $.Values.tenancy.intentResources | toJson }}
+    verbs: {{ $spec.verbs | toJson }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $tenant.id }}-intent-{{ $role }}
+  namespace: {{ $tenant.id }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $tenant.id }}-intent-{{ $role }}
+subjects:
+  {{- range $suffix := $spec.groupSuffixes }}
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: {{ printf "%s%s-%s" $prefix $tenant.id $suffix | quote }}
+  {{- end }}
+  {{- if $spec.workloadIdentity }}
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: {{ printf "%s%s:system:serviceaccount:%s:%s" $prefix (required "workloadIdentity.connectorId" $wi.connectorId) $tenant.id (required "workloadIdentity.serviceAccount" $wi.serviceAccount) | quote }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- /* Every tenant principal reads CRDs, schemas only (tenancy.crdReadVerbs): Headlamp's sidebar
+       lists every CRD, and RBAC cannot narrow a list to some names. Objects of other kinds stay
+       forbidden. */}}
+{{- $t := .Values.tenancy }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tenant-crd-reader
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: {{ $t.crdReadVerbs | toJson }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tenant-crd-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tenant-crd-reader
+subjects:
+  {{- range $tenant := .Values.tenants }}
+  {{- range $role, $spec := $t.intentRoles }}
+  {{- range $suffix := $spec.groupSuffixes }}
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: {{ printf "%s%s-%s" $prefix $tenant.id $suffix | quote }}
+  {{- end }}
+  {{- end }}
+  {{- end }}

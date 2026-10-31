@@ -47,7 +47,7 @@ type indexRegistration struct {
 // each one it finds.
 //
 // In v2, cluster authentication uses projected ServiceAccount tokens
-// (BearerTokenFile) mounted from the binding-controller pod instead of
+// (BearerTokenFile) mounted from the controller pod instead of
 // static tokens from the kubeconfig Secret. The kubeconfig Secret is still
 // read for server address and CA certificate, but the auth section is
 // overridden with the projected token file path.
@@ -60,6 +60,10 @@ type Provider struct {
 	pollInterval time.Duration
 	newCluster   func(cfg *rest.Config, scheme *runtime.Scheme) (cluster.Cluster, error)
 	tokenDir     string
+
+	// selector, when non-empty, restricts discovery to ClusterProfiles whose
+	// labels match. Set before Run; not safe to change while running.
+	selector map[string]string
 
 	mu        sync.RWMutex
 	clusters  map[string]cluster.Cluster
@@ -94,6 +98,14 @@ func NewWithTokenDir(scheme *runtime.Scheme, hubClient client.Client, pollInterv
 // connect to a real API server.
 func (p *Provider) SetClusterFactory(fn func(cfg *rest.Config, scheme *runtime.Scheme) (cluster.Cluster, error)) {
 	p.newCluster = fn
+}
+
+// SetLabelSelector restricts discovery to ClusterProfiles carrying all the
+// given labels, so a controller engages only the clusters it serves. A
+// ClusterProfile that stops matching is disengaged on the next poll. A nil or
+// empty selector engages every ClusterProfile. Call before Run.
+func (p *Provider) SetLabelSelector(selector map[string]string) {
+	p.selector = selector
 }
 
 func newRealCluster(cfg *rest.Config, scheme *runtime.Scheme) (cluster.Cluster, error) {
@@ -147,7 +159,7 @@ func (p *Provider) Run(ctx context.Context, mgr mcmanager.Manager) error {
 func (p *Provider) discover(ctx context.Context, mgr mcmanager.Manager) {
 	cps := &unstructured.UnstructuredList{}
 	cps.SetGroupVersionKind(ClusterProfileGVK)
-	if err := p.hubClient.List(ctx, cps); err != nil {
+	if err := p.hubClient.List(ctx, cps, client.MatchingLabels(p.selector)); err != nil {
 		return
 	}
 
@@ -271,7 +283,7 @@ func (p *Provider) readClusterKey(ctx context.Context, cp *unstructured.Unstruct
 // ClusterProfile. It reads the kubeconfig Secret to extract server address
 // and CA certificate, then overrides the auth mechanism with a projected
 // ServiceAccount token file (BearerTokenFile) sourced from the
-// binding-controller pod's projected volume.
+// controller pod's projected volume.
 func (p *Provider) clusterFromClusterProfile(ctx context.Context, cp *unstructured.Unstructured) (cluster.Cluster, error) {
 	secretName := cp.GetName() + KubeconfigSecretSuffix
 	secretNamespace := cp.GetNamespace()

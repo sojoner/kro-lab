@@ -1,0 +1,14 @@
+# Per-spoke overrides on top of values.yaml. Storage-only spoke: serves S3
+# buckets (Ceph RGW), no VMs.
+authConfiguration:
+  hubIssuer:
+    # Must match the audience of the eu-storage-token projected into the
+    # binding controllers (chart/hub-services values: spokeTokens).
+    audience: "homelab:eu-storage-spoke"
+
+objectStorage:
+  enabled: true
+
+bucketBindingControllerRBAC:
+  enabled: true
+

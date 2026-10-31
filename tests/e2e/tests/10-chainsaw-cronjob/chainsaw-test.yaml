@@ -1,0 +1,19 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: chainsaw-cronjob
+spec:
+  concurrent: false
+  description: "The in-cluster Chainsaw runner CronJob is deployed"
+  steps:
+  - name: chainsaw-runner CronJob exists
+    try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            namespace: monitoring
+            name: chainsaw-runner
+        timeout: 30s
+    cluster: hub

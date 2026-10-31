@@ -1,0 +1,18 @@
+{{- if .Values.oidcDiscovery.anonymous }}
+# Dex (on the hub) has no identity on this spoke, yet must read the service-account issuer's
+# discovery document and public keys to verify workload tokens. kubeadm's default binding
+# covers only system:serviceaccounts; this one adds the unauthenticated group. A separate name
+# keeps kubeadm's RBAC reconciler from reverting it. Only public metadata is exposed.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: oidc-discovery-unauthenticated
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:service-account-issuer-discovery
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: system:unauthenticated
+{{- end }}

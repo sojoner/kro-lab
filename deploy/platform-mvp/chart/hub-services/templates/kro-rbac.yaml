@@ -8,12 +8,42 @@ rules:
   - apiGroups:
       - platform.example.com
     resources:
-      - globalwidgets
-      - globalwidgets/status
-      - globalwidgets/finalizers
-      - regionalwidgetrequests
-      - regionalwidgetrequests/status
-      - regionalwidgetrequests/finalizers
+      - vmsetintents
+      - vmsetintents/status
+      - vmsetintents/finalizers
+      - regionalvmsetrequests
+      - regionalvmsetrequests/status
+      - regionalvmsetrequests/finalizers
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - platform.example.com
+    resources:
+      - bucketintents
+      - bucketintents/status
+      - bucketintents/finalizers
+      - regionalbucketrequests
+      - regionalbucketrequests/status
+      - regionalbucketrequests/finalizers
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  # VmSetIntent emits the cloud-init Secret on the hub.
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
     verbs:
       - create
       - delete

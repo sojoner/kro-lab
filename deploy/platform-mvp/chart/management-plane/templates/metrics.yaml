@@ -1,0 +1,42 @@
+{{- /* Two series per intent kind. Labels: tenant is the intent's namespace; the operator adds
+       resource (the kind), group, version and cluster. The Metric's own namespace is the label
+       "namespace", which is why the projection is not called that. */}}
+{{- $series := .Values.measurement.series }}
+{{- $ready := .Values.measurement.readyCondition }}
+{{- range .Values.measurement.targets }}
+---
+apiVersion: metrics.open-control-plane.io/v1alpha1
+kind: Metric
+metadata:
+  name: {{ .kind | lower }}-created
+  namespace: {{ $.Release.Namespace }}
+spec:
+  name: {{ $series.created }}
+  description: When each {{ .kind }} was created, per tenant
+  target: { kind: {{ .kind }}, group: {{ .group }}, version: {{ .version }} }
+  interval: {{ $.Values.measurement.interval }}
+  valueFrom:
+    fieldPath: metadata.creationTimestamp
+    type: timestamp
+  projections:
+    - { name: tenant, fieldPath: metadata.namespace }
+    - { name: name, fieldPath: metadata.name }
+---
+apiVersion: metrics.open-control-plane.io/v1alpha1
+kind: Metric
+metadata:
+  name: {{ .kind | lower }}-ready
+  namespace: {{ $.Release.Namespace }}
+spec:
+  name: {{ $series.ready }}
+  description: When the {{ $ready }} condition of each {{ .kind }} last changed, per tenant
+  target: { kind: {{ .kind }}, group: {{ .group }}, version: {{ .version }} }
+  interval: {{ $.Values.measurement.interval }}
+  valueFrom:
+    fieldPath: "status.conditions[?(@.type=='{{ $ready }}')].lastTransitionTime"
+    type: timestamp
+  projections:
+    - { name: tenant, fieldPath: metadata.namespace }
+    - { name: name, fieldPath: metadata.name }
+    - { name: ready, fieldPath: "status.conditions[?(@.type=='{{ $ready }}')].status" }
+{{- end }}

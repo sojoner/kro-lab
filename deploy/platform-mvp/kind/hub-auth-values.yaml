@@ -1,0 +1,9 @@
+# Values for rendering the hub's AuthenticationConfiguration with chart/spoke/templates/auth-config.yaml
+# (make ensure-hub-auth-config). The hub trusts its own service-account tokens natively, so only
+# the Dex issuer is configured; the rest comes from chart/spoke/values.yaml.
+authConfiguration:
+  hubIssuer:
+    enabled: false
+  dexIssuer:
+    # The portal and kubectl share Dex's one client, so the hub expects the same audience as the spokes.
+    audiences: [kubernetes]

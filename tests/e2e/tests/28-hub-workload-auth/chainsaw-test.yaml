@@ -1,0 +1,105 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: hub-workload-auth
+spec:
+  concurrent: false
+  description: >
+    Workload identity, hub side. The hub API server trusts Dex, so a service-account token from
+    `us` exchanged at Dex authenticates on the hub as
+    dex:<connector>:system:serviceaccount:<namespace>:<name>. Human logins keep the plain
+    dex:<subject> name, and tokens from anywhere else are rejected.
+    Chainsaw exposes only the current step's cluster, so the `us` token is handed to the hub
+    step through a file.
+  steps:
+    - name: mint a service-account token on us
+      try:
+      - script:
+          timeout: 60s
+          content: |
+            TOKEN_FILE=/tmp/wi-hub-auth-subject-token
+            SA=wi-hub-auth-probe
+
+            kubectl -n acme-corp create serviceaccount "$SA" >/dev/null
+            # Dex only checks the signature, so the account can go as soon as the token exists.
+            trap 'kubectl -n acme-corp delete serviceaccount "$SA" --ignore-not-found >/dev/null' EXIT
+            TOKEN=$(kubectl -n acme-corp create token "$SA" --audience dex --duration 10m)
+            (umask 077; echo "$TOKEN" > "$TOKEN_FILE")
+            echo "OK: minted token for system:serviceaccount:acme-corp:$SA"
+      cluster: us
+
+    - name: the hub authenticates Dex tokens
+      try:
+      - script:
+          timeout: 120s
+          content: |
+            TOKEN_FILE=/tmp/wi-hub-auth-subject-token
+            CONNECTOR=us-workloads
+            CLIENT=kubernetes
+            EXPECTED_USER="dex:${CONNECTOR}:system:serviceaccount:acme-corp:wi-hub-auth-probe"
+            trap 'kill $PF_PID 2>/dev/null || true; rm -f "$TOKEN_FILE"' EXIT
+
+            SUBJECT_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null || echo "")
+            if [ -z "$SUBJECT_TOKEN" ]; then
+              echo "ERROR: no us token handed over from the previous step"
+              exit 1
+            fi
+
+            kubectl -n monitoring port-forward svc/dex 15531:5556 >/dev/null &
+            PF_PID=$!
+            for _ in $(seq 1 30); do curl -sf -o /dev/null http://localhost:15531/dex/healthz && break; sleep 1; done
+
+            b64url() { tr '_-' '/+' | awk '{while(length($0)%4)$0=$0"=";print}' | base64 -d 2>/dev/null; }
+
+            # Present only the bearer token: the kubeconfig's client certificate would authenticate as admin.
+            SERVER=$(kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+            CA_FILE=$(mktemp)
+            kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d > "$CA_FILE"
+            whoami_as() {
+              kubectl --kubeconfig /dev/null --server "$SERVER" --certificate-authority "$CA_FILE" --token "$1" \
+                auth whoami -o jsonpath='{.status.userInfo.username}' 2>&1
+            }
+
+            # Workload: exchanged token -> dex:<connector>:<service account user>
+            RESP=$(curl -s -X POST http://localhost:15531/dex/token -u "${CLIENT}:" \
+              -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+              -d connector_id=${CONNECTOR} \
+              -d "scope=openid federated:id" \
+              -d requested_token_type=urn:ietf:params:oauth:token-type:id_token \
+              -d subject_token_type=urn:ietf:params:oauth:token-type:id_token \
+              --data-urlencode "subject_token=${SUBJECT_TOKEN}")
+            DEX_TOKEN=$(echo "$RESP" | jq -r '.access_token // ""')
+            if [ -z "$DEX_TOKEN" ]; then
+              echo "ERROR: token exchange failed: $RESP"
+              exit 1
+            fi
+            WHO=$(whoami_as "$DEX_TOKEN") || { echo "ERROR: hub rejected the exchanged Dex token: $WHO"; exit 1; }
+            if [ "$WHO" != "$EXPECTED_USER" ]; then
+              echo "ERROR: workload authenticated as '$WHO', expected '$EXPECTED_USER'"
+              exit 1
+            fi
+            echo "OK: workload authenticates on the hub as $WHO"
+
+            # Human: the mapping stays dex:<subject> (no connector in the name)
+            HUMAN=$(curl -s -X POST http://localhost:15531/dex/token -u "${CLIENT}:" \
+              -d grant_type=password -d username=admin@example.com -d password=password -d scope=openid | jq -r '.id_token // ""')
+            HUMAN_SUB=$(echo "$HUMAN" | cut -d. -f2 | b64url | jq -r .sub)
+            WHO=$(whoami_as "$HUMAN") || { echo "ERROR: hub rejected a human Dex token: $WHO"; exit 1; }
+            if [ "$WHO" != "dex:${HUMAN_SUB}" ]; then
+              echo "ERROR: human authenticated as '$WHO', expected 'dex:${HUMAN_SUB}'"
+              exit 1
+            fi
+            echo "OK: human authenticates on the hub as $WHO"
+
+            # Rejections
+            expect_rejected() {
+              OUT=$(whoami_as "$2") && { echo "ERROR: hub accepted $1 as '$OUT'"; exit 1; }
+              case "$OUT" in
+                *Unauthorized*) echo "OK: hub rejects $1" ;;
+                *) echo "ERROR: unexpected answer for $1: $OUT"; exit 1 ;;
+              esac
+            }
+            expect_rejected "the raw us service-account token (issuer the hub does not trust)" "$SUBJECT_TOKEN"
+            expect_rejected "a Dex token with a tampered signature" "${DEX_TOKEN%.*}.AAAA$(echo "${DEX_TOKEN##*.}" | cut -c5-)"
+            expect_rejected "a garbage token" "not.a.jwt"
+      cluster: hub

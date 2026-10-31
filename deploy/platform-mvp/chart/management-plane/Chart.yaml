@@ -1,0 +1,13 @@
+apiVersion: v2
+name: management-plane
+description: Platform MVP management plane on the hub — portal (Headlamp) and adoption/time-to-Ready measurement (metrics-operator)
+version: 0.2.2
+dependencies:
+  - name: metrics-operator
+    version: "v1.2.2"
+    repository: oci://ghcr.io/openmcp-project/charts
+    condition: metrics-operator.enabled
+  - name: headlamp
+    version: "0.46.0"
+    repository: https://kubernetes-sigs.github.io/headlamp/
+    condition: headlamp.enabled

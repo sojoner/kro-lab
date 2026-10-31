@@ -1,0 +1,115 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: auth-configuration
+spec:
+  concurrent: false
+  description: >
+    Validates that the spoke kube-apiserver uses AuthenticationConfiguration
+    (apiserver.config.k8s.io/v1beta1) instead of legacy oidc-* CLI flags, and that it
+    authenticates a real Dex-issued ID token. The hub issuer (controllers) is covered by
+    13-projected-sa-tokens.
+  steps:
+    - name: spoke apiserver loads an AuthenticationConfiguration
+      try:
+      - script:
+          timeout: 30s
+          content: |
+            APISERVER_POD=$(kubectl get pod -n kube-system -l component=kube-apiserver -o jsonpath='{.items[0].metadata.name}')
+            if [ -z "$APISERVER_POD" ]; then
+              echo "ERROR: kube-apiserver pod not found"
+              exit 1
+            fi
+
+            AUTH_CONFIG_ARG=$(kubectl get pod -n kube-system "$APISERVER_POD" -o jsonpath='{.spec.containers[0].command}' | grep -o 'authentication-config[^"]*' || echo "")
+            if [ -z "$AUTH_CONFIG_ARG" ]; then
+              echo "ERROR: kube-apiserver missing --authentication-config flag"
+              exit 1
+            fi
+            echo "OK: kube-apiserver has --authentication-config flag: $AUTH_CONFIG_ARG"
+
+            VOLUMES=$(kubectl get pod -n kube-system "$APISERVER_POD" -o json)
+            HAS_AUTH_VOLUME=$(echo "$VOLUMES" | jq '.spec.volumes[]? | select(.name | test("auth")) | .hostPath.path // ""')
+            if [ -z "$HAS_AUTH_VOLUME" ]; then
+              echo "ERROR: kube-apiserver missing auth-config volume mount"
+              exit 1
+            fi
+            echo "OK: auth-config volume mounted at $HAS_AUTH_VOLUME"
+      cluster: us
+
+    # The AuthenticationConfiguration file lives on the node and the kube-apiserver image has no
+    # shell, so the file itself cannot be read from here. Presenting a real Dex token proves what
+    # matters: the spoke trusts the issuer Dex actually stamps into its tokens.
+    # (Chainsaw exposes only the current step's cluster, so the token is fetched on the hub and
+    # handed to the spoke step through a file.)
+    - name: Dex issues an ID token for the API-server audience
+      try:
+      - script:
+          timeout: 60s
+          content: |
+            AUDIENCE=kubernetes   # public Dex client named in the spokes' AuthenticationConfiguration
+            TOKEN_FILE=/tmp/dex-spoke-auth-token
+
+            kubectl -n monitoring port-forward svc/dex 15516:5556 >/dev/null &
+            PF_PID=$!
+            trap 'kill $PF_PID 2>/dev/null || true' EXIT
+            for _ in $(seq 1 30); do curl -sf -o /dev/null http://localhost:15516/dex/healthz && break; sleep 1; done
+
+            RESP=$(curl -s -X POST http://localhost:15516/dex/token -u "${AUDIENCE}:" \
+              -d grant_type=password -d username=admin@example.com -d password=password -d scope=openid)
+            ID_TOKEN=$(echo "$RESP" | jq -r '.id_token // ""')
+            if [ -z "$ID_TOKEN" ]; then
+              echo "ERROR: Dex issued no ID token for client '$AUDIENCE': $RESP"
+              exit 1
+            fi
+            (umask 077; echo "$ID_TOKEN" > "$TOKEN_FILE")
+            echo "OK: Dex issued an ID token for client '$AUDIENCE'"
+      cluster: hub
+
+    - name: spoke apiserver authenticates the Dex token
+      try:
+      - script:
+          timeout: 60s
+          content: |
+            TOKEN_FILE=/tmp/dex-spoke-auth-token
+            trap 'rm -f "$TOKEN_FILE"' EXIT
+            ID_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null || echo "")
+            if [ -z "$ID_TOKEN" ]; then
+              echo "ERROR: no Dex token handed over from the previous step"
+              exit 1
+            fi
+
+            # Send only the bearer token: the kubeconfig's client certificate would authenticate as admin.
+            SERVER=$(kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_US}" config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+            CA_FILE=$(mktemp)
+            kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_US}" config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d > "$CA_FILE"
+
+            WHO=$(kubectl --kubeconfig /dev/null --server "$SERVER" --certificate-authority "$CA_FILE" --token "$ID_TOKEN" \
+              auth whoami -o jsonpath='{.status.userInfo.username}' 2>&1) || {
+              echo "ERROR: spoke API server rejected the Dex token: $WHO"
+              exit 1
+            }
+            case "$WHO" in
+              dex:?*) echo "OK: spoke authenticated the Dex token as $WHO" ;;
+              *) echo "ERROR: unexpected identity '$WHO', expected a dex: username"; exit 1 ;;
+            esac
+      cluster: us
+
+    - name: no legacy oidc-* flags
+      try:
+      - script:
+          timeout: 30s
+          content: |
+            APISERVER_POD=$(kubectl get pod -n kube-system -l component=kube-apiserver -o jsonpath='{.items[0].metadata.name}')
+            CMD=$(kubectl get pod -n kube-system "$APISERVER_POD" -o jsonpath='{.spec.containers[0].command}')
+
+            if echo "$CMD" | grep -q "oidc-issuer-url"; then
+              echo "ERROR: legacy oidc-issuer-url flag still present"
+              exit 1
+            fi
+            if echo "$CMD" | grep -q "oidc-client-id"; then
+              echo "ERROR: legacy oidc-client-id flag still present"
+              exit 1
+            fi
+            echo "OK: no legacy oidc-* flags detected (using AuthenticationConfiguration)"
+      cluster: us

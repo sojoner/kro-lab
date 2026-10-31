@@ -1,0 +1,30 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: fleet-registration
+spec:
+  concurrent: false
+  description: "The us spoke is registered on the hub as a ClusterProfile of region us that offers VMs"
+  steps:
+  - name: ClusterProfile us exists on the hub and offers VMs
+    try:
+    - assert:
+        resource:
+          apiVersion: multicluster.x-k8s.io/v1alpha1
+          kind: ClusterProfile
+          metadata:
+            name: us
+            namespace: default
+            labels:
+              platform.example.com/region: us
+              platform.example.com/offers-vms: "true"
+        timeout: 30s
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: us-kubeconfig
+            namespace: default
+        timeout: 30s
+    cluster: hub

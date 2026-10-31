@@ -1,0 +1,40 @@
+{{- $sa := index .Values "metrics-operator" "fullnameOverride" }}
+# The whole of what the operator may do (the subchart's own role is off): serve its own kinds,
+# write the status of Metric, and read the measured intents. No Secrets, no CRDs, nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-measurement
+rules:
+  # All four metric controllers run and wait for their caches, used or not.
+  - apiGroups: [metrics.open-control-plane.io]
+    resources:
+      - metrics
+      - managedmetrics
+      - federatedmetrics
+      - federatedmanagedmetrics
+      - datasinks
+      - remoteclusteraccesses
+      - federatedclusteraccesses
+    verbs: [get, list, watch]
+  - apiGroups: [metrics.open-control-plane.io]
+    resources: [metrics/status]
+    verbs: [get, update, patch]
+  {{- range .Values.measurement.targets }}
+  - apiGroups: [{{ .group }}]
+    resources: [{{ .resource }}]
+    verbs: [get, list, watch]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-measurement
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-measurement
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}

@@ -1,0 +1,205 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: portal-tenant-isolation
+spec:
+  concurrent: false
+  description: >
+    Tenants use the portal with their own identity. A human logs in through Headlamp's OIDC flow
+    (Dex login form, authorization code with PKCE, client kubernetes). Through Headlamp's proxy she
+    lists, creates and deletes intents in her own tenant, gets 403 in another and is nobody without
+    a login. The portal shows all four clusters, each its own login: alice sees her VMs on eu and
+    her bucket claims on eu-storage, not globex-inc's; the platform admin sees every cluster, the
+    hub read-only without Secrets. The portal uses the same Dex client as kubectl, so the hub
+    accepts its token. The plugin for Kro is installed.
+    Needs python3 and the ingress host to be reachable from where the tests run.
+  steps:
+  - name: tenants work in their own namespace only, through the portal
+    cluster: hub
+    try:
+    - script:
+        timeout: 3m
+        content: |
+          HOST=$(kubectl -n monitoring get ingress headlamp -o jsonpath='{.spec.rules[0].host}')
+          export HOST
+          TOKEN_FILE=/tmp/portal-isolation-token
+          export TOKEN_FILE
+          python3 -I - <<'PY'
+          import html, http.cookiejar, json, os, re, ssl, sys, urllib.error, urllib.parse, urllib.request
+
+          host = os.environ["HOST"]
+          base = f"https://{host}"
+          portal = f"{base}/headlamp"
+          callback = f"{portal}/oidc-callback"
+          api = f"{portal}/clusters/hub/apis/platform.example.com/v1alpha1/namespaces"
+          ctx = ssl.create_default_context()
+          ctx.check_hostname = False
+          ctx.verify_mode = ssl.CERT_NONE   # Dex's certificate is self-signed
+
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *a, **k):
+                  return None
+
+
+          def session():
+              jar = http.cookiejar.CookieJar()
+              return jar, urllib.request.build_opener(
+                  urllib.request.HTTPCookieProcessor(jar), urllib.request.HTTPSHandler(context=ctx), NoRedirect)
+
+
+          def call(op, method, url, data=None, json_body=None):
+              headers = {}
+              if json_body is not None:
+                  data, headers = json.dumps(json_body).encode(), {"Content-Type": "application/json"}
+              elif data is not None:
+                  data = urllib.parse.urlencode(data).encode()
+              try:
+                  r = op.open(urllib.request.Request(url, data=data, method=method, headers=headers), timeout=20)
+                  return r.status, r.headers, r.read().decode()
+              except urllib.error.HTTPError as e:
+                  return e.code, e.headers, e.read().decode()
+
+
+          def login(user, cluster="hub", sess=None):
+              """Headlamp's own login to one cluster: its redirect to Dex, Dex's form, and Headlamp's
+              callback. Pass the session of an earlier login to add a cluster to it."""
+              jar, op = sess or session()
+              url, form = f"{portal}/oidc?cluster={cluster}", None
+              for _ in range(12):
+                  st, h, body = call(op, "POST" if form else "GET", url, data=form)
+                  loc = h.get("Location")
+                  if loc:
+                      url, form = urllib.parse.urljoin(url, loc), None
+                      if url.startswith(callback):
+                          st, h, body = call(op, "GET", url)   # Headlamp trades the code for the token
+                          if st >= 400:
+                              sys.exit(f"ERROR: Headlamp's callback answered {st}: {body[:200]}")
+                          return jar, op
+                      continue
+                  m = re.search(r'href="([^"]*/auth/local[^"]*)"', body)   # Dex's connector chooser
+                  if st == 200 and m:
+                      url, form = urllib.parse.urljoin(url, html.unescape(m.group(1))), None
+                      continue
+                  m = re.search(r'<form[^>]*action="([^"]*)"', body)       # Dex's login form
+                  if st == 200 and m and 'name="login"' in body:
+                      url = urllib.parse.urljoin(url, html.unescape(m.group(1)))
+                      form = {"login": user, "password": "password"}
+                      continue
+                  sys.exit(f"ERROR: login of {user} stuck at {st} {url}: {body[:200]}")
+              sys.exit(f"ERROR: login of {user} did not reach Headlamp's callback")
+
+
+          def status(op, method, ns, name="", body=None):
+              return call(op, method, f"{api}/{ns}/bucketintents/{name}".rstrip("/"), json_body=body)[0]
+
+
+          def expect(what, got, want):
+              if got not in want:
+                  sys.exit(f"ERROR: {what}: got {got}, want {want}")
+              print(f"OK: {what} ({got})")
+
+
+          alice_jar, alice = login("alice@acme-corp.example.com")
+          cookies = sorted(c.name for c in alice_jar)
+          print("cookies after login:", cookies)
+          expect("alice lists intents in acme-corp", status(alice, "GET", "acme-corp"), (200,))
+          expect("alice lists intents in globex-inc", status(alice, "GET", "globex-inc"), (403,))
+          intent = {"apiVersion": "platform.example.com/v1alpha1", "kind": "BucketIntent",
+                    "metadata": {"name": "portal-check", "namespace": "acme-corp"}, "spec": {"regions": ["us"], "size": "S"}}
+          expect("alice creates an intent in acme-corp", status(alice, "POST", "acme-corp", body=intent), (201,))
+          expect("alice deletes it", status(alice, "DELETE", "acme-corp", "portal-check"), (200,))
+          intent["metadata"]["namespace"] = "globex-inc"
+          expect("alice creates an intent in globex-inc", status(alice, "POST", "globex-inc", body=intent), (403,))
+
+          # Headlamp's sidebar lists every CRD, and its page for a custom resource gets and watches
+          # the CRD by name before it lists anything, so tenants read CRDs (schemas only).
+          crds = f"{portal}/clusters/hub/apis/apiextensions.k8s.io/v1/customresourcedefinitions"
+          expect("alice lists the CRDs (the sidebar's Custom Resources)", call(alice, "GET", crds)[0], (200,))
+          for crd in ("bucketintents.platform.example.com", "vmsetintents.platform.example.com"):
+              expect(f"alice gets the CRD {crd}", call(alice, "GET", f"{crds}/{crd}")[0], (200,))
+              expect(f"alice watches the CRD {crd} by name",
+                     call(alice, "GET", f"{crds}?fieldSelector=metadata.name%3D{crd}&watch=1&timeoutSeconds=1")[0], (200,))
+          # A schema is not an object: objects of other kinds stay forbidden.
+          for what, url in (("regional requests in acme-corp", f"{api}/acme-corp/regionalbucketrequests"),
+                            ("cluster profiles", f"{portal}/clusters/hub/apis/multicluster.x-k8s.io/v1alpha1/clusterprofiles")):
+              expect(f"alice reads no {what}", call(alice, "GET", url)[0], (403,))
+
+          dave_jar, dave = login("dave@globex-inc.example.com")
+          expect("dave lists intents in globex-inc", status(dave, "GET", "globex-inc"), (200,))
+          expect("dave lists intents in acme-corp", status(dave, "GET", "acme-corp"), (403,))
+
+          # The platform admin's portal is the operator's view: the platform, read-only, no Secrets.
+          admin_jar, admin = login("admin@example.com")
+          core = f"{portal}/clusters/hub/api/v1"
+          expect("the platform admin lists namespaces", call(admin, "GET", f"{core}/namespaces")[0], (200,))
+          expect("the platform admin lists nodes", call(admin, "GET", f"{core}/nodes")[0], (200,))
+          # Headlamp's overview asks for node metrics; without a metrics server the answer must be
+          # "not found", not "forbidden", or the overview shows a permissions banner.
+          expect("the platform admin may ask for node metrics",
+                 call(admin, "GET", f"{portal}/clusters/hub/apis/metrics.k8s.io/v1beta1/nodes")[0], (200, 404))
+          expect("the platform admin lists acme-corp's intents", status(admin, "GET", "acme-corp"), (200,))
+          expect("the platform admin reads no Secrets", call(admin, "GET", f"{core}/namespaces/acme-corp/secrets")[0], (403,))
+          intent["metadata"]["namespace"] = "acme-corp"
+          expect("the platform admin creates no intent", status(admin, "POST", "acme-corp", body=intent), (403,))
+
+          # The portal shows every cluster; each cluster is its own login, and RBAC on it decides.
+          spoke = lambda c, path: f"{portal}/clusters/{c}{path}"
+          for c in ("eu", "eu-storage"):
+              login("alice@acme-corp.example.com", c, (alice_jar, alice))
+          for what, c, path in (("VMs on eu", "eu", "/apis/kubevirt.io/v1/namespaces/%s/virtualmachines"),
+                                ("bucket claims on eu-storage", "eu-storage", "/apis/objectbucket.io/v1alpha1/namespaces/%s/objectbucketclaims")):
+              expect(f"alice lists acme-corp's {what} in the portal", call(alice, "GET", spoke(c, path % "acme-corp"))[0], (200,))
+              expect(f"alice lists globex-inc's {what} in the portal", call(alice, "GET", spoke(c, path % "globex-inc"))[0], (403,))
+          for c in ("us", "eu", "eu-storage"):
+              login("admin@example.com", c, (admin_jar, admin))
+              expect(f"the platform admin lists the namespaces of {c} in the portal", call(admin, "GET", spoke(c, "/api/v1/namespaces"))[0], (200,))
+
+          nobody_jar, nobody = session()
+          expect("without a login nothing is allowed", status(nobody, "GET", "acme-corp"), (401, 403))
+
+          # Alice's ID token, for the spoke check in the next step.
+          parts = sorted((c for c in alice_jar if c.name.startswith("headlamp-auth-hub")), key=lambda c: c.name)
+          if not parts:
+              sys.exit("ERROR: Headlamp set no auth cookie; cookies: %s" % cookies)
+          fd = os.open(os.environ["TOKEN_FILE"], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+          os.write(fd, "".join(urllib.parse.unquote(c.value) for c in parts).encode())
+          os.close(fd)
+          PY
+
+  - name: the hub accepts the portal token
+    cluster: hub
+    try:
+    - script:
+        content: |
+          trap 'rm -f /tmp/portal-isolation-token' EXIT
+          TOKEN=$(cat /tmp/portal-isolation-token 2>/dev/null || echo "")
+          [ -n "$TOKEN" ] || { echo "ERROR: no portal token handed over from the previous step"; exit 1; }
+          # One Dex client for the portal and kubectl, so one audience everywhere.
+          AUD=$(echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | awk '{while(length($0)%4)$0=$0"=";print}' | base64 -d 2>/dev/null | jq -r '.aud // ""')
+          [ "$AUD" = "kubernetes" ] || { echo "ERROR: the portal token has audience '$AUD', want kubernetes"; exit 1; }
+          # Present only the bearer token: the kubeconfig's client certificate would authenticate as admin.
+          SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+          CA=$(mktemp)
+          kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d > "$CA"
+          kubectl --kubeconfig /dev/null --server "$SERVER" --certificate-authority "$CA" --token "$TOKEN" get --raw /version >/dev/null \
+            || { echo "ERROR: the hub rejected the portal token"; exit 1; }
+          echo "OK: the hub accepts the portal token"
+
+  - name: the Kro plugin is installed in the portal
+    cluster: hub
+    try:
+    - script:
+        timeout: 3m
+        content: |
+          kubectl -n monitoring port-forward svc/headlamp 19093:80 >/dev/null 2>&1 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do curl -sf -m 5 -o /dev/null http://localhost:19093/headlamp/ && break; sleep 1; done
+          # The sidecar installs it from the network after the pod starts.
+          for _ in $(seq 1 30); do
+            curl -s -m 10 http://localhost:19093/headlamp/plugins | jq -e 'any(.[]; .name == "headlamp_kro")' >/dev/null && { echo "OK: headlamp_kro is listed"; exit 0; }
+            sleep 5
+          done
+          echo "ERROR: headlamp_kro is not listed by the portal"
+          exit 1

@@ -1,0 +1,5 @@
+tenant: globex-inc
+buckets:
+  - { name: reports, regions: [eu], size: S }
+vmSets:
+  - { name: api, regions: [eu, us], size: S, replicas: 1 }

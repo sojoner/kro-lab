@@ -1,0 +1,251 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: hub-tenant-intents
+spec:
+  concurrent: false
+  cluster: hub
+  description: >
+    A tenant account is a hub namespace and its intents are the tenant's inventory. Humans
+    (Dex groups) and the tenant's workload identity are tenant principals under one RBAC table:
+    admin, developer and the workload identity write, analyst reads. Admission only lets a
+    tenant principal create, change or delete an intent in its own tenant namespace; nobody
+    else may, including the platform admin and the kind admin. The platform admin reads the
+    platform, intents included but no Secrets, and offboards a tenant by deleting its namespace,
+    which is the only kind of namespace it may delete. Users are impersonated (`--as`); real tokens are covered by 28-hub-workload-auth.
+  steps:
+    - name: the old kinds are gone and tenant principals share one RBAC table
+      try:
+        - script:
+            timeout: 60s
+            content: |
+              set -u
+              fail=0
+              for CRD in buckets vmsets; do
+                if kubectl get crd "$CRD.platform.example.com" >/dev/null 2>&1; then echo "ERROR: kind $CRD still exists"; fail=1; fi
+              done
+              as() { # as <who> <tenant>
+                case "$1" in
+                  wi)    echo "--as=dex:us-workloads:system:serviceaccount:$2:platform-provisioner" ;;
+                  alice) echo "--as=dex:alice@$2.example.com --as-group=dex:$2-admin" ;;
+                  bob)   echo "--as=dex:bob@$2.example.com --as-group=dex:$2-developer" ;;
+                  carol) echo "--as=dex:carol@$2.example.com --as-group=dex:$2-analyst" ;;
+                esac
+              }
+              expect() { # expect <yes|no> <who> <tenant> <verb> <resource> <namespace>
+                GOT=$(kubectl auth can-i "$4" "$5.platform.example.com" -n "$6" $(as "$2" "$3") 2>/dev/null)
+                if [ "$GOT" != "$1" ]; then echo "ERROR: $2@$3 $4 $5 in $6 => '$GOT', expected '$1'"; fail=1; else echo "OK: $2@$3 $4 $5 in $6 => $1"; fi
+              }
+              for R in bucketintents vmsetintents; do
+                for W in wi alice bob; do
+                  for V in get list watch create update patch delete; do expect yes $W acme-corp $V $R acme-corp; done
+                  expect no $W acme-corp create $R globex-inc
+                  expect no $W acme-corp delete $R globex-inc
+                  expect no $W acme-corp create $R default
+                done
+                for V in get list watch; do expect yes carol acme-corp $V $R acme-corp; done
+                for V in create update patch delete; do expect no carol acme-corp $V $R acme-corp; done
+                expect yes alice globex-inc create $R globex-inc
+              done
+              # Platform-owned objects stay out of the workload identity's reach.
+              for R in regionalbucketrequests regionalvmsetrequests; do expect no wi acme-corp create $R acme-corp; done
+              exit $fail
+
+    - name: admission lets only a tenant principal create in its own tenant namespace
+      try:
+        - script:
+            timeout: 120s
+            content: |
+              set -u
+              fail=0
+              KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl demo@example"
+              as() { # as <who> <tenant>
+                case "$1" in
+                  wi)             echo "--as=dex:us-workloads:system:serviceaccount:$2:platform-provisioner" ;;
+                  alice)          echo "--as=dex:alice@$2.example.com --as-group=dex:$2-admin" ;;
+                  bob)            echo "--as=dex:bob@$2.example.com --as-group=dex:$2-developer" ;;
+                  carol)          echo "--as=dex:carol@$2.example.com --as-group=dex:$2-analyst" ;;
+                  platform-admin) echo "--as=dex:admin@example.com --as-group=dex:platform-admin" ;;
+                  kind-admin)     echo "" ;;
+                esac
+              }
+              # create <who> <who's tenant> <kind> <namespace>: server-side dry run, no tenant label
+              create() {
+                if [ "$3" = BucketIntent ]; then SPEC="  regions: [eu]\n  size: S"
+                else SPEC="  regions: [eu]\n  size: S\n  replicas: 1\n  sshPublicKey: \"$KEY\""; fi
+                printf 'apiVersion: platform.example.com/v1alpha1\nkind: %s\nmetadata:\n  name: probe\n  namespace: %s\nspec:\n%b\n' "$3" "$4" "$SPEC" \
+                  | kubectl create --dry-run=server -f - $(as "$1" "$2") 2>&1
+              }
+              accepted() { # accepted <description> <output>
+                if echo "$2" | grep -q "created (server dry run)"; then echo "OK: accepted $1"; else echo "ERROR: $1 was refused: $2"; fail=1; fi
+              }
+              refused() { # refused <description> <output> <expected text>
+                if echo "$2" | grep -q "created (server dry run)"; then echo "ERROR: $1 was accepted"; fail=1
+                elif ! echo "$2" | grep -qE "$3"; then echo "ERROR: $1 was refused for another reason (wanted '$3'): $2"; fail=1
+                else echo "OK: refused $1"; fi
+              }
+              for K in BucketIntent VmSetIntent; do
+                for W in wi alice bob; do accepted "$K by $W in acme-corp" "$(create $W acme-corp $K acme-corp)"; done
+                refused "$K by carol (analyst)" "$(create carol acme-corp $K acme-corp)" forbidden
+                refused "$K by the platform admin in acme-corp" "$(create platform-admin acme-corp $K acme-corp)" "forbidden|intent-by-tenant-principal"
+                refused "$K by the kind admin in acme-corp" "$(create kind-admin acme-corp $K acme-corp)" intent-by-tenant-principal
+                refused "$K by an acme-corp principal in globex-inc" "$(create alice acme-corp $K globex-inc)" forbidden
+                refused "$K by the acme-corp workload identity in globex-inc" "$(create wi acme-corp $K globex-inc)" forbidden
+                refused "$K by the kind admin in default" "$(create kind-admin acme-corp $K default)" "intent-in-tenant-namespace|intent-by-tenant-principal"
+                refused "$K by the platform admin in default" "$(create platform-admin acme-corp $K default)" "forbidden|intent-in-tenant-namespace|intent-by-tenant-principal"
+              done
+              # The key is written into a single-quoted shell line of the VM's user-data.
+              KEY="ssh-ed25519 AAAA' ; touch /tmp/pwned #"
+              refused "a VmSetIntent whose key breaks out of the shell line" "$(create wi acme-corp VmSetIntent acme-corp)" sshPublicKey
+              exit $fail
+
+    - name: tenant principals create, change and delete their intents; the tenant label comes from the namespace
+      try:
+        - script:
+            timeout: 10m
+            content: |
+              set -u
+              fail=0
+              KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl demo@example"
+              T=acme-corp
+              as() { # as <who>
+                case "$1" in
+                  wi)    echo "--as=dex:us-workloads:system:serviceaccount:$T:platform-provisioner" ;;
+                  alice) echo "--as=dex:alice@$T.example.com --as-group=dex:$T-admin" ;;
+                  bob)   echo "--as=dex:bob@$T.example.com --as-group=dex:$T-developer" ;;
+                esac
+              }
+              waitfor() { # waitfor <description> <command...>: poll for up to 60s
+                WHAT=$1; shift
+                for i in $(seq 30); do if "$@" >/dev/null 2>&1; then echo "OK: $WHAT"; return 0; fi; sleep 2; done
+                echo "ERROR: timed out: $WHAT"; fail=1; return 1
+              }
+              label_of() { kubectl get "$1" "$2" -n "$T" -o jsonpath='{.metadata.labels.platform\.example\.com/tenant}' 2>/dev/null; }
+              has_tenant_label() { [ "$(label_of "$1" "$2")" = "$T" ]; }
+
+              for W in wi alice bob; do
+                # Bucket: create without a tenant label, change regions, delete.
+                N="b-$W"
+                printf 'apiVersion: platform.example.com/v1alpha1\nkind: BucketIntent\nmetadata:\n  name: %s\n  namespace: %s\nspec:\n  regions: [us]\n  size: S\n' "$N" "$T" \
+                  | kubectl create -f - $(as $W) || { echo "ERROR: $W could not create $N"; fail=1; continue; }
+                waitfor "$N request in us carries tenant=$T" has_tenant_label regionalbucketrequest "$N-us"
+                kubectl patch bucketintent "$N" -n "$T" --type merge -p '{"spec":{"regions":["us","eu"]}}' $(as $W) \
+                  && echo "OK: $W changed the regions of $N" || { echo "ERROR: $W could not change $N"; fail=1; }
+                waitfor "$N request in eu carries tenant=$T" has_tenant_label regionalbucketrequest "$N-eu"
+                kubectl delete bucketintent "$N" -n "$T" --wait=true --timeout=120s $(as $W) \
+                  && echo "OK: $W deleted $N" || { echo "ERROR: $W could not delete $N"; fail=1; }
+                waitfor "$N requests are gone" sh -c "! kubectl get regionalbucketrequest -n $T -l platform.example.com/bucket=$N -o name | grep -q ."
+
+                # VmSet: no cluster serves asia, so nothing runs; the replicas are the spec change.
+                N="v-$W"
+                printf 'apiVersion: platform.example.com/v1alpha1\nkind: VmSetIntent\nmetadata:\n  name: %s\n  namespace: %s\nspec:\n  regions: [asia]\n  size: S\n  replicas: 1\n  sshPublicKey: "%s"\n' "$N" "$T" "$KEY" \
+                  | kubectl create -f - $(as $W) || { echo "ERROR: $W could not create $N"; fail=1; continue; }
+                waitfor "$N request in asia carries tenant=$T" has_tenant_label regionalvmsetrequest "$N-asia"
+                kubectl patch vmsetintent "$N" -n "$T" --type merge -p '{"spec":{"replicas":2}}' $(as $W) \
+                  && echo "OK: $W changed the replicas of $N" || { echo "ERROR: $W could not change $N"; fail=1; }
+                kubectl delete vmsetintent "$N" -n "$T" --wait=true --timeout=120s $(as $W) \
+                  && echo "OK: $W deleted $N" || { echo "ERROR: $W could not delete $N"; fail=1; }
+              done
+              exit $fail
+
+    - name: nobody but a tenant principal may change or delete an intent, not even the admins
+      try:
+        - script:
+            timeout: 3m
+            content: |
+              set -u
+              fail=0
+              T=acme-corp
+              WI="--as=dex:us-workloads:system:serviceaccount:$T:platform-provisioner"
+              ADMIN="--as=dex:admin@example.com --as-group=dex:platform-admin"
+              N=guarded
+              printf 'apiVersion: platform.example.com/v1alpha1\nkind: BucketIntent\nmetadata:\n  name: %s\n  namespace: %s\nspec:\n  regions: [us]\n  size: S\n' "$N" "$T" \
+                | kubectl create -f - $WI || { echo "ERROR: could not create $N"; exit 1; }
+              refused() { # refused <description> <command...>
+                WHAT=$1; shift
+                OUT=$("$@" 2>&1) && { echo "ERROR: $WHAT was allowed"; fail=1; return; }
+                if echo "$OUT" | grep -qE "forbidden|intent-by-tenant-principal"; then echo "OK: refused $WHAT"; else echo "ERROR: $WHAT was refused for another reason: $OUT"; fail=1; fi
+              }
+              # The platform admin only reads intents, so RBAC refuses its writes; the kind admin
+              # (system:masters) passes RBAC and is the one admission has to stop.
+              for WHO in "$ADMIN" ""; do
+                NAME=${WHO:+the platform admin}; NAME=${NAME:-the kind admin}
+                refused "a spec change by $NAME" kubectl patch bucketintent "$N" -n "$T" --type merge -p '{"spec":{"regions":["us","eu"]}}' $WHO
+                refused "a delete by $NAME" kubectl delete bucketintent "$N" -n "$T" --wait=false $WHO
+              done
+              # A change that leaves the spec alone is what Kro itself does (finalizers, labels): always allowed.
+              kubectl label bucketintent "$N" -n "$T" probe=1 >/dev/null && echo "OK: a label change by the kind admin is allowed" || { echo "ERROR: a label change was refused"; fail=1; }
+              kubectl delete bucketintent "$N" -n "$T" --wait=true --timeout=120s $WI || { echo "ERROR: the workload identity could not delete $N"; fail=1; }
+              exit $fail
+
+    - name: the platform admin reads the platform, intents included, but no Secrets
+      try:
+        - script:
+            timeout: 60s
+            content: |
+              set -u
+              fail=0
+              ADMIN="--as=dex:admin@example.com --as-group=dex:platform-admin"
+              expect() { # expect <yes|no> <can-i arguments...>
+                WANT=$1; shift
+                GOT=$(kubectl auth can-i "$@" $ADMIN 2>/dev/null)
+                if [ "$GOT" = "$WANT" ]; then echo "OK: can-i $* => $WANT"; else echo "ERROR: can-i $* => '$GOT', expected '$WANT'"; fail=1; fi
+              }
+              # Every kind the hub serves, except Secrets.
+              MISSING=""
+              for R in $(kubectl api-resources --verbs=list -o name); do
+                [ "$R" = secrets ] && continue
+                [ "$(kubectl auth can-i list "$R" -A $ADMIN 2>/dev/null)" = yes ] || MISSING="$MISSING $R"
+              done
+              if [ -n "$MISSING" ]; then echo "ERROR: the platform admin cannot list:$MISSING"; fail=1; else echo "OK: the platform admin lists every kind the hub serves except Secrets"; fi
+              for R in pods configmaps bucketintents.platform.example.com regionalbucketrequests.platform.example.com; do expect yes list "$R" -n acme-corp; done
+              expect yes get pods --subresource=log -n monitoring
+              for NS in acme-corp kube-system monitoring; do expect no get secrets -n "$NS"; done
+              expect no list secrets -A
+              for V in create update patch delete; do expect no "$V" bucketintents.platform.example.com -n acme-corp; done
+              exit $fail
+
+    - name: deleting the tenant namespace offboards the tenant
+      try:
+        - script:
+            timeout: 5m
+            content: |
+              set -u
+              fail=0
+              T=offboard-probe
+              WI="dex:us-workloads:system:serviceaccount:$T:platform-provisioner"
+              ADMIN="--as=dex:admin@example.com --as-group=dex:platform-admin"
+              # The platform admin may delete tenant namespaces only (admission, dry run).
+              for NS in monitoring kro-system; do   # kube-system and default: Kubernetes refuses anyone
+                OUT=$(kubectl delete namespace "$NS" --dry-run=server $ADMIN 2>&1) && { echo "ERROR: the platform admin may delete $NS"; fail=1; continue; }
+                echo "$OUT" | grep -q platform-admin-offboards-tenants && echo "OK: the platform admin may not delete $NS" || { echo "ERROR: deleting $NS was refused for another reason: $OUT"; fail=1; }
+              done
+              trap 'kubectl delete namespace "$T" --ignore-not-found --wait=false >/dev/null 2>&1' EXIT
+              kubectl apply -f - <<EOF
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: $T
+                labels: {platform.example.com/tenant-namespace: "true"}
+              ---
+              apiVersion: rbac.authorization.k8s.io/v1
+              kind: Role
+              metadata: {name: probe-writer, namespace: $T}
+              rules:
+                - apiGroups: [platform.example.com]
+                  resources: [bucketintents]
+                  verbs: [get, list, create, delete]
+              ---
+              apiVersion: rbac.authorization.k8s.io/v1
+              kind: RoleBinding
+              metadata: {name: probe-writer, namespace: $T}
+              roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: probe-writer}
+              subjects: [{apiGroup: rbac.authorization.k8s.io, kind: User, name: "$WI"}]
+              EOF
+              printf 'apiVersion: platform.example.com/v1alpha1\nkind: BucketIntent\nmetadata:\n  name: leaving\n  namespace: %s\nspec:\n  regions: [us]\n  size: S\n' "$T" \
+                | kubectl create -f - --as="$WI" || { echo "ERROR: could not create the intent"; exit 1; }
+              for i in $(seq 30); do kubectl get regionalbucketrequest leaving-us -n "$T" >/dev/null 2>&1 && break; sleep 2; done
+              kubectl get regionalbucketrequest leaving-us -n "$T" >/dev/null || { echo "ERROR: the request never appeared"; exit 1; }
+              kubectl delete namespace "$T" --wait=true --timeout=180s $ADMIN || { echo "ERROR: the platform admin could not offboard $T"; exit 1; }
+              echo "OK: the namespace, its intent and its request are gone"
+              exit $fail

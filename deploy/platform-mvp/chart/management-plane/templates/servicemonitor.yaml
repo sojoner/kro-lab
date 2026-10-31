@@ -1,0 +1,14 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: metrics-operator
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: metrics-operator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}

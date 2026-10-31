@@ -1,0 +1,32 @@
+{{- /* Render and apply as the tenant: helm template <tenant> chart/tenant -f values-<tenant>.yaml
+       --set-file sshPublicKey=~/.ssh/demo_rsa.pub | kubectl --context hub apply -f -
+       Admission takes only intents from the tenant's own principals, so nobody else can apply it. */}}
+{{- $ns := required "tenant: the tenant's hub namespace (values-<tenant>.yaml)" .Values.tenant }}
+{{- range .Values.buckets }}
+---
+apiVersion: platform.example.com/v1alpha1
+kind: BucketIntent
+metadata:
+  name: {{ .name }}
+  namespace: {{ $ns }}
+spec:
+  regions: {{ .regions | toJson }}
+  {{- with .size }}
+  size: {{ . }}
+  {{- end }}
+{{- end }}
+{{- range .Values.vmSets }}
+---
+apiVersion: platform.example.com/v1alpha1
+kind: VmSetIntent
+metadata:
+  name: {{ .name }}
+  namespace: {{ $ns }}
+spec:
+  regions: {{ .regions | toJson }}
+  {{- with .size }}
+  size: {{ . }}
+  {{- end }}
+  replicas: {{ .replicas }}
+  sshPublicKey: {{ required "sshPublicKey (--set-file sshPublicKey=$HOME/.ssh/demo_rsa.pub)" $.Values.sshPublicKey | trim | quote }}
+{{- end }}

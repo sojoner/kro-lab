@@ -1,0 +1,2 @@
+# rook-ceph operator chart. Loop devices are only for kind/lab clusters.
+allowLoopDevices: true

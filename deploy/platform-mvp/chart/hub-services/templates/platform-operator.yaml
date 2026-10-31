@@ -1,0 +1,72 @@
+{{- /* The platform operator on the hub (platformOperator.*): reads the platform, never Secrets,
+       and offboards a tenant by deleting its namespace. RBAC grants namespace deletion; the
+       policy below allows it for tenant namespaces only (label tenancy.namespaceLabel). */}}
+{{- $op := .Values.platformOperator }}
+{{- $group := printf "%s%s" (required "workloadIdentity.userPrefix (deploy/platform-mvp/tenants.yaml)" .Values.workloadIdentity.userPrefix) $op.group }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-operator
+rules:
+  - apiGroups: [""]
+    resources: {{ $op.readCoreResources | toJson }}
+    verbs: {{ $op.readVerbs | toJson }}
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["delete"]
+  - apiGroups: {{ $op.readApiGroups | toJson }}
+    resources: ["*"]
+    verbs: {{ $op.readVerbs | toJson }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-operator
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: {{ $group | quote }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-operator-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $op.viewClusterRole }}
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: {{ $group | quote }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: platform-admin-offboards-tenants
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["DELETE"]
+        resources: ["namespaces"]
+  matchConditions:
+    - name: platform-operator
+      expression: {{ printf "'%s' in request.userInfo.groups" $group | quote }}
+  validations:
+    - expression: {{ printf "oldObject.metadata.?labels[?'%s'].orValue('') == 'true'" .Values.tenancy.namespaceLabel | quote }}
+      messageExpression: {{ printf "'the platform operator deletes tenant namespaces only; ' + oldObject.metadata.name + ' has no label %s'" .Values.tenancy.namespaceLabel | quote }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: platform-admin-offboards-tenants
+spec:
+  policyName: platform-admin-offboards-tenants
+  validationActions: ["Deny"]

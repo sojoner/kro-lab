@@ -1,0 +1,89 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ingress-log-shipping
+spec:
+  concurrent: false
+  description: "The ingress controller, the Grafana ingress, the event exporter and Loki are ready, and a Kubernetes event reaches Loki"
+  steps:
+  - name: ingress controller is deployed
+    try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            namespace: monitoring
+            name: hub-ingress-nginx-controller
+        timeout: 2m
+    cluster: hub
+  - name: Grafana ingress exists
+    try:
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            namespace: monitoring
+            name: grafana
+        timeout: 30s
+    cluster: hub
+  - name: event exporter is deployed
+    try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            namespace: monitoring
+            name: event-exporter
+        timeout: 2m
+    cluster: hub
+  - name: Loki is ready
+    try:
+    - script:
+        timeout: 30s
+        content: |
+          kubectl --kubeconfig "${CHAINSAW_KUBECONFIG_HUB}" -n monitoring port-forward svc/loki 13100:3100 &
+          PF_PID=$!
+          sleep 3
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:13100/ready || echo "000")
+          kill $PF_PID 2>/dev/null || true
+          [ "$STATUS" = "200" ] || exit 1
+          echo "Loki ready and accepting pushes"
+    cluster: hub
+  - name: a Kubernetes event reaches Loki
+    cluster: hub
+    try:
+    - script:
+        timeout: 2m
+        content: |
+          set -u
+          MARK="chainsaw-event-probe-$(date +%s)-$$"
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          trap 'kubectl -n monitoring delete event "$MARK" --ignore-not-found >/dev/null 2>&1; kill $PF 2>/dev/null' EXIT
+          kubectl create -f - <<EOF
+          apiVersion: v1
+          kind: Event
+          metadata: {name: $MARK, namespace: monitoring}
+          involvedObject: {apiVersion: apps/v1, kind: Deployment, name: event-exporter, namespace: monitoring}
+          reason: ChainsawProbe
+          message: "$MARK"
+          type: Normal
+          source: {component: chainsaw}
+          firstTimestamp: "$NOW"
+          lastTimestamp: "$NOW"
+          count: 1
+          EOF
+          kubectl -n monitoring port-forward svc/loki 13101:3100 >/dev/null 2>&1 &
+          PF=$!
+          START=$(( $(date +%s) - 300 ))000000000
+          for i in $(seq 30); do
+            N=$(curl -s --get http://localhost:13101/loki/api/v1/query_range \
+                  --data-urlencode "query={job=\"kubernetes-events\"} |= \"$MARK\"" \
+                  --data-urlencode "start=$START" | jq '[.data.result[]?.values[]] | length' 2>/dev/null)
+            if [ "${N:-0}" -gt 0 ]; then echo "OK: the event reached Loki under job=kubernetes-events"; exit 0; fi
+            sleep 2
+          done
+          echo "ERROR: the event $MARK never reached Loki under job=kubernetes-events"
+          exit 1

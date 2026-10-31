@@ -1,3 +1,29 @@
+{{- /* The exporter reads its config once, so the pod template carries its checksum. Keys:
+       https://github.com/resmoio/kubernetes-event-exporter (v1.7: streamLabels, omitLookup). */}}
+{{- define "eventExporter.config" -}}
+logLevel: info
+logFormat: json
+maxEventAgeSeconds: {{ .Values.eventExporter.maxEventAgeSeconds }}
+omitLookup: {{ .Values.eventExporter.omitLookup }}
+route:
+  routes:
+    - match:
+        - receiver: loki
+receivers:
+  - name: loki
+    loki:
+      url: http://loki.monitoring:3100/loki/api/v1/push
+      streamLabels: {{ .Values.eventExporter.streamLabels | toJson }}
+      layout:
+        message: "{{ "{{ .Reason }}" }} — {{ "{{ .InvolvedObject.Kind }}" }}/{{ "{{ .InvolvedObject.Name }}" }}"
+        namespace: "{{ "{{ .InvolvedObject.Namespace }}" }}"
+        involved_kind: "{{ "{{ .InvolvedObject.Kind }}" }}"
+        involved_name: "{{ "{{ .InvolvedObject.Name }}" }}"
+        reason: "{{ "{{ .Reason }}" }}"
+        type: "{{ "{{ .Type }}" }}"
+        message_text: "{{ "{{ .Message }}" }}"
+        count: "{{ "{{ .Count }}" }}"
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,6 +40,8 @@ spec:
     metadata:
       labels:
         app: event-exporter
+      annotations:
+        checksum/config: {{ include "eventExporter.config" . | sha256sum }}
     spec:
       serviceAccountName: event-exporter
       containers:
@@ -39,27 +67,7 @@ metadata:
   namespace: monitoring
 data:
   config.yaml: |
-    logLevel: info
-    logFormat: json
-    route:
-      routes:
-        - match:
-            - receiver: loki
-    receivers:
-      - name: loki
-        loki:
-          url: http://loki.monitoring:3100/loki/api/v1/push
-          stream:
-            job: kubernetes-events
-          layout:
-            message: "{{ "{{ .Reason }}" }} — {{ "{{ .InvolvedObject.Kind }}" }}/{{ "{{ .InvolvedObject.Name }}" }}"
-            namespace: "{{ "{{ .InvolvedObject.Namespace }}" }}"
-            involved_kind: "{{ "{{ .InvolvedObject.Kind }}" }}"
-            involved_name: "{{ "{{ .InvolvedObject.Name }}" }}"
-            reason: "{{ "{{ .Reason }}" }}"
-            type: "{{ "{{ .Type }}" }}"
-            message_text: "{{ "{{ .Message }}" }}"
-            count: "{{ "{{ .Count }}" }}"
+    {{- include "eventExporter.config" . | nindent 4 }}
 ---
 apiVersion: v1
 kind: ServiceAccount

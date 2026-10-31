@@ -1,0 +1,36 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    image: __NODE_IMAGE__
+    kubeadmConfigPatches:
+    - |
+      kind: ClusterConfiguration
+      apiServer:
+        extraArgs:
+          # Default issuer (https://kubernetes.default.svc.cluster.local) is only
+          # resolvable from inside this cluster. Every spoke's
+          # AuthenticationConfiguration (chart/spoke/values.yaml authConfiguration.hubIssuer)
+          # trusts this exact URL to validate controller SA tokens cross-cluster —
+          # it must stay in sync with that value.
+          service-account-issuer: "https://hub-control-plane:6443"
+          service-account-jwks-uri: "https://hub-control-plane:6443/openid/v1/jwks"
+          # The hub trusts Dex, so workloads exchanging their service-account tokens there
+          # authenticate on the hub. Rendered by `make ensure-hub-auth-config`.
+          authentication-config: "/etc/kubernetes/auth/authentication-configuration.yaml"
+        extraVolumes:
+          - name: auth-config
+            hostPath: /etc/kubernetes/auth
+            mountPath: /etc/kubernetes/auth
+            readOnly: true
+    extraMounts:
+      - hostPath: __AUTH_DIR__
+        containerPath: /etc/kubernetes/auth
+        readOnly: true
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP

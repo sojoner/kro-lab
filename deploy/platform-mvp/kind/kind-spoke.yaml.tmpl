@@ -1,0 +1,27 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    image: __NODE_IMAGE__
+    kubeadmConfigPatches:
+    - |
+      kind: ClusterConfiguration
+      apiServer:
+        extraArgs:
+          authentication-config: "/etc/kubernetes/auth/authentication-configuration.yaml"
+          # Workloads on this spoke present their service-account tokens to Dex, which fetches
+          # discovery and keys from this issuer. The default (kubernetes.default.svc) only
+          # resolves inside the cluster.
+          service-account-issuer: "__SA_ISSUER__"
+          service-account-jwks-uri: "__SA_ISSUER__/openid/v1/jwks"
+        extraVolumes:
+          - name: auth-config
+            hostPath: /etc/kubernetes/auth
+            mountPath: /etc/kubernetes/auth
+            readOnly: true
+    extraMounts:
+      - hostPath: __AUTH_DIR__
+        containerPath: /etc/kubernetes/auth
+        readOnly: true
+  - role: worker
+    image: __NODE_IMAGE__
